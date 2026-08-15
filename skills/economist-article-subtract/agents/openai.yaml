@@ -1,0 +1,4 @@
+interface:
+  display_name: "Economist Article Subtract"
+  short_description: "Extract verified Economist articles with multimodal page reading"
+  default_prompt: "Extract one selected article from an Economist PDF into a verified source package."
