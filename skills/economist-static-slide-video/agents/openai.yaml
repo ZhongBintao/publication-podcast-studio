@@ -1,0 +1,4 @@
+interface:
+  display_name: "Economist Static-Slide Video"
+  short_description: "Render source-linked static-slide podcast videos"
+  default_prompt: "Use $economist-static-slide-video to create a two-state storyboard and render the selected production variant without regenerating its audio or captions."

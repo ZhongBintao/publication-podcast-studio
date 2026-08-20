@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from unittest import mock
 import unittest
 
 
@@ -88,3 +89,16 @@ class EconomistArticleSubtractTests(unittest.TestCase):
             "reasons": [{"page": 47, "reason": "Cross-column continuation is unclear."}],
         }
         self.assertEqual(MODULE.validate_escalation(escalation, request), [47])
+
+    def test_issue_cover_is_a_separate_issue_level_asset(self):
+        with self.subTest("relative asset path"):
+            from tempfile import TemporaryDirectory
+            with TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                rendered = output / "assets" / "issue-cover.png"
+                rendered.parent.mkdir()
+                rendered.touch()
+                with mock.patch.object(MODULE, "render_page", return_value=rendered):
+                    cover = MODULE.materialise_issue_cover(Path("issue.pdf"), output)
+                self.assertEqual(cover["file"], "assets/issue-cover.png")
+                self.assertEqual(cover["source_page"], 1)

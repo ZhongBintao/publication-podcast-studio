@@ -77,7 +77,7 @@ The current workflow is:
 
 ```text
 User-selected variants -> verified source package -> dual-host selected scripts
--> Azure DragonHD segment audio -> WordBoundary alignment and captions
+-> Azure DragonHD segment audio -> default BGM mix + WordBoundary alignment/captions
 -> static-slide video
 ```
 
@@ -101,7 +101,11 @@ entire magazine issue to the model or use extracted PDF text as final copy.
   alignment, WAV concatenation, SRT/VTT generation, resumable segment caching,
   and one-session Azure Speech Translation for the `en-zh` variant. English
   defaults use the selected Ava/Andrew DragonHD pair and per-speaker SSML voice
-  parameters.
+  parameters. Every successful media run also applies the skill's packaged
+  three-source background music by default. It preserves the original
+  voice-only WAV, exports timeline-aligned voice and background stems, and
+  writes their -18 dB mix to the canonical `audio/<language>/final.wav`; the
+  static-slide renderer therefore carries the music into every final MP4.
 - `skills/economist-static-slide-video/` validates a two-state
   `storyboard.json` and renders non-animated 16:9 or 9:16 MP4 outputs from the
   selected final WAV, canonical SRT, verified article package, issue cover and
@@ -120,6 +124,12 @@ After all workflow skills are complete, expose one top-level
 description, collect all required information in one request, echo the frozen
 request for confirmation, and then run automatically without intermediate
 approval steps.
+
+This top-level entrypoint is not implemented yet. Until it exists, production
+invokes the completed skills individually in the order described below. The
+current local tree may contain newer uncommitted Azure-media and static-slide
+implementation files; treat Git history and `git status` separately when
+checking whether those stages have been versioned.
 
 The request may select one or more values in each output dimension:
 
@@ -181,10 +191,20 @@ Use the lightweight source-to-podcast-script skill after article verification.
 It generates only the script required by the selected variant:
 
 - English preserves article paragraph order, facts, numbers, attribution and
-  judgments. It may only use `verbatim` and `sentence_split` segments. Final
+  judgments. It uses only `verbatim` and `sentence_split` segments. Final
   English `spoken_text` must not retain parentheses or square brackets:
-  convert their content into natural spoken pauses without changing lexical
-  content.
+  convert their content into natural spoken pauses without changing factual
+  meaning. The production writing path uses `english-request` followed by
+  `finalize-english`; the legacy deterministic `english` command remains a
+  source-preserving fallback for fixtures and recovery.
+- English delivery should sound like prepared hosts talking through a reported
+  story rather than an article being read aloud. Prefer short, direct clauses,
+  contractions and relaxed connectors. A small approved set of non-factual
+  markers may be used sparingly: `well`, `so`, `right`, `you know`, `I mean`,
+  `actually`, `honestly`, `exactly`, `okay`, `look`, `sure`, `of course` and
+  `basically`. These markers create conversational rhythm only; they must not
+  introduce questions, responses, commentary, hand-offs, claims or dialogue
+  turns. Keep each source paragraph with its deterministic speaker.
 - Chinese is a paragraph-by-paragraph faithful spoken translation. It may
   split or merge sentences and reorder clauses within the same paragraph to
   sound natural in Chinese. Preserve every fact, number, attribution,
@@ -203,12 +223,14 @@ It generates only the script required by the selected variant:
   speakers at roughly a two-to-one paragraph ratio; a one-paragraph article is
   not padded just to force a second voice.
   Do not duplicate the full English article in scripts, briefs or prompts.
-- The script validator checks complete paragraph coverage, legal segment kinds
-  and source references automatically. It also rejects English brackets and
-  Chinese brackets, repeated punctuation, and comma-wrapped aliases or money
-  conversions. On a Chinese punctuation failure, retry only the affected source
-  paragraphs once; a second failure blocks that language. It does not ask for
-  an intermediate human review.
+- The script validator checks complete paragraph coverage, legal segment kinds,
+  source references and deterministic speaker assignment automatically. For
+  English it verifies source-token coverage after removing only the approved
+  delivery markers, rejects brackets, and rejects overlong unsplit segments.
+  For Chinese it rejects brackets, repeated punctuation, and comma-wrapped
+  aliases or money conversions. On a Chinese punctuation failure, retry only
+  the affected source paragraphs once; a second failure blocks that language.
+  It does not ask for an intermediate human review.
 
 For `en-zh`, the writing stage supplies a reviewed, source-linked schema-2.0
 sentence subtitle script. Azure Speech Translation phrase output is legacy
@@ -293,12 +315,18 @@ the canonical artifacts required for that variant:
 article.json
 production.json
 en:    script.en.json, audio/en/final.wav, alignment.en.json,
+       audio/en/voice-only.wav, audio/en/voice-track.wav,
+       audio/en/background-music.wav, background-music.en.json,
        captions.en.srt, captions.en.vtt
 en-zh: script.en.json, subtitle-script.en-zh.json, audio/en/final.wav,
+       audio/en/voice-only.wav, audio/en/voice-track.wav,
+       audio/en/background-music.wav, background-music.en.json,
        alignment.en.json, caption-cues.en-zh.json, captions.en-zh.srt,
        captions.en-zh.vtt
-zh-CN: script.zh-CN.json, audio/zh-CN/final.wav, alignment.zh-CN.json,
-       captions.zh-CN.srt, captions.zh-CN.vtt
+zh-CN: script.zh-CN.json, audio/zh-CN/final.wav,
+       audio/zh-CN/voice-only.wav, audio/zh-CN/voice-track.wav,
+       audio/zh-CN/background-music.wav, background-music.zh-CN.json,
+       alignment.zh-CN.json, captions.zh-CN.srt, captions.zh-CN.vtt
 ```
 
 Artifact handoff is contract-preserving across the whole workflow:
@@ -334,6 +362,13 @@ contract.
 It must never contain a key, authorization header, signed URL or full secret
 request log. State is only `queued`, `running`, `complete` or `failed`.
 
+The Azure media skill applies background music on every successful media run.
+It records the three input hashes, frame-level placements, gain and output
+hashes in `background-music.<language>.json`, and adds the voice-only,
+time-aligned voice, background, mixed-audio and timeline paths to
+`production.json.artifacts`. The padded voice track starts at six seconds and
+the canonical mixed track and captions share that absolute clock.
+
 Credentials normally come from environment variables named `AZURE_SPEECH_KEY`
 and `AZURE_SPEECH_REGION`. For local desktop production, the Azure adapter may
 fall back to reading only `AZURE_SPEECH_KEY` from the workspace-root `.env`
@@ -354,8 +389,10 @@ than interactive approval steps.
 The static-slide skill renders simple non-animated videos from verified article
 assets, `storyboard.json`, final audio and the selected canonical caption
 timeline. It supports 16:9 and 9:16 from shared content data and does not add
-avatar video, dynamic video generation, background music, sound effects or
-complex animation.
+avatar video, dynamic video generation, sound effects or complex animation.
+  Its canonical audio input is the mixed `audio/<language>/final.wav` produced
+  by the Azure speech skill, so it carries the default background music without
+  an extra renderer flag.
 
 The v1 storyboard has two contiguous states: an opening metadata slide followed
 by a concurrent two-question guide slide. The writing stage supplies the two

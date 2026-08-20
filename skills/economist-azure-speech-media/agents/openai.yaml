@@ -1,0 +1,4 @@
+interface:
+  display_name: "Economist Azure Speech Media"
+  short_description: "Create one selected audio and caption variant"
+  default_prompt: "Use $economist-azure-speech-media to synthesize the selected production variant, automatically mix the packaged three-source background music with the voice, and write the canonical mixed audio, alignment, and captions."

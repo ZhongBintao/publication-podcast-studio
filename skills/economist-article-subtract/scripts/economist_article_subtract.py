@@ -29,6 +29,7 @@ METADATA_FIELDS = ("section", "kicker", "headline", "subtitle", "byline", "datel
 SCOPE_DPI = 180
 CONTEXT_DPI = 120
 READING_DPI = 220
+ISSUE_COVER_DPI = 300
 CROP_MARGIN_POINTS = 12
 # At this coverage, a 120dpi context page plus 220dpi crops is still cheaper
 # than a 220dpi full page, with margin for image-encoding overhead.
@@ -336,6 +337,22 @@ def materialise_visual_plan(pdf_path: Path, output: Path, index: dict[str, Any],
     return context_pages, region_images, page_visuals
 
 
+def materialise_issue_cover(pdf_path: Path, output: Path) -> dict[str, Any]:
+    """Render the PDF's first page once as the issue-cover source asset.
+
+    The cover is not an article image and therefore deliberately does not pass
+    through the article-asset approval loop. It is an issue-level visual used
+    only by the opening slide template.
+    """
+    file = render_page(pdf_path, 1, ISSUE_COVER_DPI, output / "assets" / "issue-cover").resolve()
+    return {
+        "file": str(file.relative_to(output.resolve())),
+        "source_page": 1,
+        "dpi": ISSUE_COVER_DPI,
+        "extraction_method": "rendered_pdf_page",
+    }
+
+
 def assemble(args: argparse.Namespace) -> int:
     manifest, scope = read_json(Path(args.manifest)), read_json(Path(args.scope))
     index = read_json(Path(manifest["index_path"]))
@@ -347,11 +364,13 @@ def assemble(args: argparse.Namespace) -> int:
     (output / "source.raw.txt").write_text(raw_text(index, scope["text_regions"]))
     plan = page_visual_plan(index, scope)
     context_pages, region_images, page_visuals = materialise_visual_plan(Path(manifest["source_pdf"]), output, index, plan)
+    issue_cover = materialise_issue_cover(Path(manifest["source_pdf"]), output)
     catalog = [asset for page in index["pages"] if page["number"] in scope["article_pages"] for asset in page["image_objects"]]
     request = {
         "source_pdf": manifest["source_pdf"], "source_sha256": manifest["source_sha256"], "scope_path": str((output / "scope.json").resolve()),
         "output_dir": str(output.resolve()), "article_pages": context_pages, "article": scope["article"], "text_regions": scope["text_regions"], "excluded_regions": scope.get("excluded_regions", []), "asset_catalog": catalog,
         "context_pages": context_pages, "region_images": region_images, "page_visuals": page_visuals,
+        "issue_cover": issue_cover,
         "visual_budget": {"baseline_reading_pixels": sum(item["baseline_reading_pixels"] for item in plan), "planned_reading_pixels": sum(item["planned_reading_pixels"] for item in plan)},
         "approved_assets": scope.get("assets", []),
         "model_extraction_template": {
@@ -477,6 +496,8 @@ def finalize(args: argparse.Namespace) -> int:
         "article_pages": scope["article_pages"], "text_regions": request["text_regions"], "excluded_regions": model.get("excluded_regions", scope.get("excluded_regions", [])),
         "paragraphs": model["paragraphs"], "corrections": model.get("corrections", []), "assets": assets, "reviewer_notes": model.get("reviewer_notes", ""),
     }
+    if request.get("issue_cover"):
+        package["issue_cover"] = request["issue_cover"]
     write_json(output / "article.json", package)
     preview = f"# Verification preview\n\n- Headline: {model['article']['headline']}\n- Pages: {scope['article_pages']}\n- Paragraphs: {len(model['paragraphs'])}\n- Assets: {len(assets)}\n- Corrections: {len(model.get('corrections', []))}\n\n## Text preview\n\n{body[:1800]}"
     (output / "preview.md").write_text(preview)

@@ -61,4 +61,9 @@ Use this as the first production step. Keep article discovery local, then use mu
 
 Write `source.md` only from verified model paragraphs. Preserve `source.raw.txt`, rendered page evidence, `scope.json`, `model-extraction.json`, correction records, image provenance, and the source PDF hash in the article package.
 
+The assembler also renders PDF page 1 once as the issue-cover asset and writes
+it to `assets/issue-cover.png`. It is recorded separately as
+`article.json.issue_cover`, not mixed into the article-image list. The
+static-slide video opener consumes this fixed issue-level asset.
+
 Treat `needs_review` as a successful safe stop, not an invitation to guess. Do not include terminal squares, continuation arrows, page headers, or excluded regions in formal Markdown.
