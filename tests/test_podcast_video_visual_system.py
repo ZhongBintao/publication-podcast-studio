@@ -49,8 +49,12 @@ class PodcastVideoVisualSystemTests(unittest.TestCase):
         self.assertEqual(tokens["subtitle_english"], "#FFFFFF")
         self.assertEqual(tokens["subtitle_chinese"], "#FFFFFF")
         for name in ("landscape_guide_questions", "portrait_guide_questions"):
-            question_ids = [layer["id"] for layer in self.definition["templates"][name]["layers"] if layer["id"].startswith("guide_question_")]
+            question_ids = [layer["id"] for layer in self.definition["templates"][name]["layers"] if layer["id"] in {"guide_question_1", "guide_question_2"}]
             self.assertEqual(question_ids, ["guide_question_1", "guide_question_2"])
+        for name in ("landscape_guide_questions", "portrait_guide_questions"):
+            number_layers = [layer for layer in self.definition["templates"][name]["layers"] if layer["id"].endswith("_number")]
+            self.assertEqual([layer["text"] for layer in number_layers], ["01", "02"])
+            self.assertTrue(all(layer["style"]["color"] == "#D71920" for layer in number_layers))
         landscape_layers = {layer["id"]: layer for layer in self.definition["templates"]["landscape_opening"]["layers"]}
         self.assertEqual(landscape_layers["subtitle_rail"]["fill"], tokens["page_background"])
         for layer_id in ("caption_en", "caption_zh"):
@@ -67,7 +71,7 @@ class PodcastVideoVisualSystemTests(unittest.TestCase):
             self.assertEqual(style["background_color"], "#262626")
             self.assertAlmostEqual(style["background_opacity"], 1.0)
 
-    def test_portrait_adaptations_preserve_translation_bands_and_native_cjk_stops(self):
+    def test_portrait_adaptations_use_compact_free_flow_and_native_cjk_stops(self):
         tokens = self.definition["design_tokens"]
         self.assertEqual(tokens["colors"]["page_background"], "#262626")
         self.assertEqual(tokens["colors"]["portrait_page_panel"], "#262626")
@@ -77,15 +81,23 @@ class PodcastVideoVisualSystemTests(unittest.TestCase):
             self.assertEqual(layers["caption_en"]["style"]["alignment"], "center")
             self.assertEqual(layers["caption_zh"]["style"]["alignment"], "center")
         layers = {layer["id"]: layer for layer in self.definition["templates"]["portrait_opening"]["layers"]}
-        self.assertEqual(layers["headline_zh"]["style"]["font_size_pt"], 16)
-        self.assertEqual(layers["subtitle_zh"]["style"]["font_size_pt"], 14)
+        self.assertEqual(layers["headline_zh"]["style"]["font_size_pt"], 15)
+        self.assertEqual(layers["subtitle_zh"]["style"]["font_size_pt"], 10)
         self.assertGreater(layers["headline_zh"]["bbox"][1], layers["headline"]["bbox"][1])
         self.assertGreater(layers["subtitle_zh"]["bbox"][1], layers["subtitle"]["bbox"][1])
-        self.assertEqual(layers["headline_zh"]["bbox"][1], 416)
-        self.assertEqual(layers["subtitle"]["bbox"][1], 464)
-        self.assertEqual(layers["subtitle_zh"]["bbox"][1], 507)
+        self.assertEqual(layers["headline_zh"]["bbox"][1], 344)
+        self.assertEqual(layers["subtitle"]["bbox"][1], 379)
+        self.assertEqual(layers["subtitle_zh"]["bbox"][1], 430)
+        self.assertEqual(layers["subtitle_rail"]["bbox"], [32.43, 525.6, 340.47, 108])
+        self.assertEqual(layers["subtitle_rail"]["stroke"], "none")
+        self.assertNotIn("article_page", layers)
+        self.assertNotIn("caption_label", layers)
+        self.assertNotIn("caption_cue", layers)
+        self.assertNotIn("caption_number", layers)
+        self.assertEqual(layers["issue_cover"]["bbox"], [52.67, 40.32, 300, 180])
+        self.assertEqual(layers["issue_cover"]["fit"], "contain")
         landscape = self.definition["templates"]["landscape_opening"]
-        self.assertEqual(next(layer for layer in landscape["layers"] if layer["id"] == "headline")["bbox"], [80, 123.15, 466.67, 160])
+        self.assertEqual(next(layer for layer in landscape["layers"] if layer["id"] == "headline")["bbox"], [80, 82.48, 466.67, 160])
 
     def test_landscape_caption_rail_uses_one_compact_bilingual_flow(self):
         template = self.definition["templates"]["landscape_opening"]
@@ -138,7 +150,7 @@ class PodcastVideoVisualSystemTests(unittest.TestCase):
             diagnostics,
         )
         self.assertEqual(frame.getpixel((10, 1000)), (38, 38, 38))
-        self.assertEqual(frame.getpixel((1161, 53)), (255, 255, 255))
+        self.assertEqual(frame.getpixel((1161, 53)), (38, 38, 38))
         caption = next(item for item in diagnostics if item["layer"] == "caption_en")
         self.assertEqual(caption["font"], "Arial Bold/bold")
         self.assertEqual(caption["font_weight"], "bold")

@@ -56,7 +56,7 @@ delivery language. Any other added English content is a source-fidelity error.
    ```bash
    RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
    "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py init-production ARTICLE.json production.json \
-     --variant en --region AZURE_REGION --aspect-ratio 16:9
+     --variant en --region AZURE_REGION --aspect-ratio 9:16
    "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py english-request ARTICLE.json > english-request.json
    ```
 

@@ -306,6 +306,123 @@ def layer_map(definition: dict[str, Any], template_name: str) -> dict[str, dict[
     return layers
 
 
+def prepare_portrait_opening_layers(
+    draw: ImageDraw.ImageDraw,
+    template: dict[str, Any],
+    layers: dict[str, dict[str, Any]],
+    content: dict[str, Any],
+    scale: float,
+) -> dict[str, dict[str, Any]]:
+    """Flow opening metadata vertically so long titles never collide."""
+    if template["canvas"].get("aspect_ratio") != "9:16" or "headline" not in layers:
+        return layers
+
+    opening_ids = ("kicker", "article_page", "headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline")
+    original = {name: layers[name] for name in opening_ids if name in layers}
+    adaptive_ids = ("headline", "headline_zh", "subtitle", "subtitle_zh")
+    max_steps = max(
+        (
+            int(original[name].get("style", {}).get("font_size_pt", 1))
+            - int(original[name].get("style", {}).get("min_font_size_pt", original[name].get("style", {}).get("font_size_pt", 1)))
+            for name in adaptive_ids
+            if name in original
+        ),
+        default=0,
+    )
+    image_bottom = 0
+    if "issue_cover" in layers:
+        _, image_y, _, image_height = scaled_box(layers["issue_cover"]["bbox"], scale)
+        image_bottom = image_y + image_height
+    start_y = round(241.2 * scale)
+    bottom_limit = round((525.6 - 8) * scale)
+    max_measure_height = round(template["canvas"]["height"] * scale)
+
+    for step in range(max_steps + 1):
+        prepared: dict[str, dict[str, Any]] = {}
+        measured_height: dict[str, int] = {}
+        failed = False
+        for name, source in original.items():
+            layer = dict(source)
+            style = dict(source.get("style", {}))
+            value = resolve(source.get("content_binding", ""), content).strip()
+            if not value:
+                layer["bbox"] = [source["bbox"][0], 0, source["bbox"][2], 0]
+                layer["style"] = style
+                prepared[name] = layer
+                measured_height[name] = 0
+                continue
+            if style.get("wrap") == "adaptive":
+                base_size = int(source["style"]["font_size_pt"])
+                minimum = int(source["style"].get("min_font_size_pt", base_size))
+                size = max(minimum, base_size - step)
+                style["font_size_pt"] = size
+                style["min_font_size_pt"] = size
+                try:
+                    face, lines, line_height = fitted_adaptive_lines(
+                        draw, value, style, style, round(source["bbox"][2] * scale), max_measure_height, scale
+                    )
+                except RuntimeError:
+                    failed = True
+                    break
+                inset_top, inset_bottom = text_insets(style, scale)
+                height = len(lines) * line_height + inset_top + inset_bottom
+                style["font_size_pt"] = round(face.size * 72 / (96 * scale))
+                style["min_font_size_pt"] = style["font_size_pt"]
+            else:
+                face = typeface(
+                    style["font_size_pt"],
+                    bold=style.get("bold", False),
+                    cjk=has_cjk(value),
+                    sans=is_sans(style.get("font")),
+                    font_value=style.get("font"),
+                    font_weight=style.get("font_weight"),
+                    text=value,
+                    scale=scale,
+                )
+                line_height = round(glyph_height(draw, face) * style.get("line_spacing_percent", 125) / 100)
+                height = line_height
+            layer["style"] = style
+            layer["bbox"] = [source["bbox"][0], 0, source["bbox"][2], height / scale]
+            prepared[name] = layer
+            measured_height[name] = height
+
+        if failed:
+            continue
+
+        cursor = start_y
+        placed = False
+
+        # The kicker and page marker form one aligned metadata row.
+        row_height = max(measured_height.get("kicker", 0), measured_height.get("article_page", 0))
+        if row_height:
+            for name in ("kicker", "article_page"):
+                if name in prepared and measured_height.get(name, 0):
+                    prepared[name]["bbox"][1] = cursor / scale
+                    prepared[name]["bbox"][3] = measured_height[name] / scale
+            cursor += row_height
+            placed = True
+
+        for name, gap in (("headline", 7), ("headline_zh", 6), ("subtitle", 11), ("subtitle_zh", 4), ("byline_dateline", 12)):
+            height = measured_height.get(name, 0)
+            if not height:
+                continue
+            if placed:
+                cursor += round(gap * scale)
+            prepared[name]["bbox"][1] = cursor / scale
+            prepared[name]["bbox"][3] = height / scale
+            cursor += height
+            placed = True
+
+        # If there is no metadata, retain an empty layer map without inventing space.
+        if not placed:
+            return layers
+        if cursor <= bottom_limit and cursor >= image_bottom:
+            layers.update(prepared)
+            return layers
+
+    raise RuntimeError("Portrait opening copy cannot fit above the caption card without overlap.")
+
+
 def caption_layers_for_frame(
     draw: ImageDraw.ImageDraw,
     template: dict[str, Any],
@@ -313,7 +430,7 @@ def caption_layers_for_frame(
     content: dict[str, Any],
     scale: float,
 ) -> dict[str, dict[str, Any]]:
-    """Prepare caption layers while preserving the horizontal rail geometry."""
+    """Prepare captions while preserving the prototype card and safe area."""
     caption_ids = ("caption_en", "caption_zh")
     if "subtitle_rail" not in layers or not any(resolve(layers[name]["content_binding"], content).strip() for name in caption_ids):
         return layers
@@ -357,56 +474,34 @@ def caption_layers_for_frame(
     canvas_height = round(template["canvas"]["height"] * scale)
     protected_bottom = 0
     for layer_id in template["source_layer_order"]:
-        if layer_id in {*caption_ids, "subtitle_rail"}:
+        if layer_id in {*caption_ids, "subtitle_rail", "caption_label", "caption_cue", "caption_number"}:
             continue
         layer = layers[layer_id]
         if layer["kind"] not in {"text", "multilingual_text", "image"}:
             continue
         _, y, _, height = scaled_box(layer["bbox"], scale)
         protected_bottom = max(protected_bottom, y + height)
-    top_limit = protected_bottom + round(8 * scale)
-    padding = round(8 * scale)
-    gap = round(6 * scale)
-    prepared: list[tuple[str, ImageFont.FreeTypeFont, list[str], int, int, int]] = []
-    styles = {name: dict(layers[name]["style"]) for name in caption_ids}
-    minimum_steps = max(int(styles[name].get("font_size_pt", 1)) - int(styles[name].get("min_font_size_pt", styles[name].get("font_size_pt", 1))) for name in caption_ids)
-    for step in range(minimum_steps + 1):
-        prepared = []
-        for name in caption_ids:
-            layer = layers[name]
-            value = normalize_caption_text(resolve(layer["content_binding"], content))
-            if not value.strip():
-                continue
-            style = dict(styles[name])
-            size = max(int(style["min_font_size_pt"]), int(style["font_size_pt"]) - step)
-            style["font_size_pt"] = size
-            style["min_font_size_pt"] = size
-            style["unbounded_lines"] = True
-            _, _, width, _ = scaled_box(layer["bbox"], scale)
-            face, lines, line_height = fitted_adaptive_lines(draw, value, style, style, width, canvas_height, scale)
-            inset_top, inset_bottom = text_insets(style, scale)
-            prepared.append((name, face, lines, line_height, inset_top, inset_bottom))
-        total_height = padding * 2 + sum(len(lines) * line_height + inset_top + inset_bottom for _, _, lines, line_height, inset_top, inset_bottom in prepared) + gap * max(0, len(prepared) - 1)
-        rail_top = canvas_height - total_height
-        if rail_top >= top_limit:
-            break
-    else:
-        raise RuntimeError("Caption cannot fit above protected template content at the minimum readable font size.")
     rail = dict(layers["subtitle_rail"])
-    rail["bbox"] = [0, rail_top / scale, template["canvas"]["width"], total_height / scale]
+    rail_x, rail_y, rail_width, rail_height = scaled_box(rail["bbox"], scale)
+    safe_bottom_percent = float(template.get("platform_safe_bottom_percent", 0))
+    safe_bottom = canvas_height - round(canvas_height * safe_bottom_percent / 100)
+    if rail_y < protected_bottom + round(8 * scale) or rail_y + rail_height > safe_bottom:
+        raise RuntimeError("Portrait caption card collides with protected content or the platform safe zone.")
     layers["subtitle_rail"] = rail
-    cursor = rail_top + padding
-    for name, face, lines, line_height, inset_top, inset_bottom in prepared:
+
+    for name in caption_ids:
         layer = dict(layers[name])
-        _, _, width, _ = scaled_box(layer["bbox"], scale)
-        style = dict(layer["style"])
-        style["font_size_pt"] = round(face.size * 72 / (96 * scale))
-        style["min_font_size_pt"] = style["font_size_pt"]
-        style["unbounded_lines"] = True
+        style = dict(layer.get("style", {}))
+        style["unbounded_lines"] = False
+        style["max_lines"] = int(style.get("max_lines", 2))
+        style["letter_spacing"] = 0
+        style["alignment"] = "center"
+        value = normalize_caption_text(resolve(layer["content_binding"], content))
+        if value.strip():
+            _, _, width, height = scaled_box(layer["bbox"], scale)
+            fitted_adaptive_lines(draw, value, style, style, width, height, scale)
         layer["style"] = style
-        layer["bbox"] = [layer["bbox"][0], cursor / scale, width / scale, (len(lines) * line_height + inset_top + inset_bottom) / scale]
         layers[name] = layer
-        cursor += len(lines) * line_height + inset_top + inset_bottom + gap
     return layers
 
 
@@ -418,13 +513,16 @@ def hex_rgb(value: str) -> tuple[int, int, int]:
 def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any], scale: float, diagnostics: list[dict[str, Any]] | None = None) -> None:
     draw = ImageDraw.Draw(canvas)
     x, y, width, height = scaled_box(layer["bbox"], scale)
-    style_blocks = layer.get("paragraphs") or [dict(layer["style"], binding=layer["content_binding"])]
+    style_blocks = layer.get("paragraphs") or [dict(layer["style"], binding=layer.get("content_binding", ""))]
     rendered: list[tuple[str, ImageFont.FreeTypeFont, str, int]] = []
     for block in style_blocks:
-        value = resolve(block["binding"], content)
+        value = resolve(block["binding"], content) if block.get("binding") else str(layer.get("text", ""))
         if layer["id"] in {"caption_en", "caption_zh"}:
             value = normalize_caption_text(value)
-        style = layer.get("style", block)
+        style = dict(layer.get("style", block))
+        for key in ("wrap", "alignment", "line_spacing_percent"):
+            if key not in style and key in layer:
+                style[key] = layer[key]
         if style.get("wrap") == "adaptive":
             face, lines, line_height = fitted_adaptive_lines(draw, value, block, style, width, height, scale)
         else:
@@ -445,7 +543,10 @@ def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any
     total_height = sum(line_height for _, _, _, line_height in rendered)
     inset_top, inset_bottom = text_insets(layer.get("style", {}), scale)
     inner_height = max(0, height - inset_top - inset_bottom)
-    cursor_y = y + inset_top + max(0, (inner_height - total_height) // 2)
+    if layer.get("vertical_alignment", "center") == "top":
+        cursor_y = y + inset_top
+    else:
+        cursor_y = y + inset_top + max(0, (inner_height - total_height) // 2)
     alignment = layer.get("style", {}).get("alignment", layer.get("alignment", "left"))
     stroke_width = round(float(layer.get("style", {}).get("stroke_width_px", 0)) * scale)
     stroke_fill = layer.get("style", {}).get("stroke_color", "#FFFFFF")
@@ -453,7 +554,12 @@ def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any
     for line, face, color, line_height in rendered:
         left, top, right, bottom = draw.textbbox((0, 0), line, font=face, stroke_width=stroke_width)
         line_width, line_box_height = right - left, bottom - top
-        line_x = x + max(0, (width - line_width) // 2) if alignment == "center" else x
+        if alignment == "center":
+            line_x = x + max(0, (width - line_width) // 2)
+        elif alignment == "right":
+            line_x = x + max(0, width - line_width)
+        else:
+            line_x = x
         text_y = cursor_y - top
         placements.append((line, face, color, line_height, line_x, text_y, line_width, line_box_height))
         cursor_y += line_height
@@ -502,17 +608,24 @@ def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any
 
 def draw_image(canvas: Image.Image, layer: dict[str, Any], cover_path: Path, scale: float) -> None:
     x, y, width, height = scaled_box(layer["bbox"], scale)
+    frame = Image.new("RGB", (width, height), "#262626")
     with Image.open(cover_path) as source:
-        image = source.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
-    canvas.paste(image, (x, y))
+        image = source.convert("RGB")
+        fit = layer.get("fit", "contain")
+        ratio = (max if fit == "crop" else min)(width / image.width, height / image.height)
+        resized = image.resize((max(1, round(image.width * ratio)), max(1, round(image.height * ratio))), Image.Resampling.LANCZOS)
+        if fit == "crop":
+            offset_x = max(0, (resized.width - width) // 2)
+            offset_y = max(0, (resized.height - height) // 2)
+            frame.paste(resized.crop((offset_x, offset_y, offset_x + width, offset_y + height)))
+        else:
+            frame.paste(resized, ((width - resized.width) // 2, (height - resized.height) // 2))
+    canvas.paste(frame, (x, y))
     style = layer.get("style", {})
-    border_color = style.get("border_color", "#FFFFFF")
-    border_width = max(1, round(float(style.get("border_width_px", 2)) * scale))
-    ImageDraw.Draw(canvas).rectangle(
-        (x, y, x + width - 1, y + height - 1),
-        outline=border_color,
-        width=border_width,
-    )
+    if style.get("stroke", "none") != "none":
+        border_color = style.get("border_color", "#FFFFFF")
+        border_width = max(1, round(float(style.get("border_width_px", 2)) * scale))
+        ImageDraw.Draw(canvas).rectangle((x, y, x + width - 1, y + height - 1), outline=border_color, width=border_width)
 
 
 def render_template(definition: dict[str, Any], template_name: str, cover_path: Path, content: dict[str, Any], output_height: int, output_width: int | None = None, diagnostics: list[dict[str, Any]] | None = None) -> Image.Image:
@@ -524,12 +637,21 @@ def render_template(definition: dict[str, Any], template_name: str, cover_path: 
     canvas = Image.new("RGB", (round(canvas_width * scale), output_height), definition["design_tokens"]["colors"]["page_background"])
     draw = ImageDraw.Draw(canvas)
     layers = layer_map(definition, template_name)
+    layers = prepare_portrait_opening_layers(draw, template, layers, content, scale)
     layers = caption_layers_for_frame(draw, template, layers, content, scale)
     for layer_id in template["source_layer_order"]:
         layer = layers[layer_id]
         if layer["kind"] == "shape":
             x, y, width, height = scaled_box(layer["bbox"], scale)
-            draw.rectangle((x, y, x + width, y + height), fill=layer["fill"])
+            stroke = layer.get("stroke", "none")
+            outline = None if stroke == "none" else stroke
+            outline_width = max(1, round(float(layer.get("stroke_width_px", 1)) * scale)) if outline else 1
+            geometry = str(layer.get("geometry", ""))
+            if "round" in geometry:
+                radius = round(float(layer.get("corner_radius_px", 0)) * scale)
+                draw.rounded_rectangle((x, y, x + width, y + height), radius=radius, fill=layer.get("fill"), outline=outline, width=outline_width)
+            else:
+                draw.rectangle((x, y, x + width, y + height), fill=layer.get("fill"), outline=outline, width=outline_width)
         elif layer["kind"] == "image":
             draw_image(canvas, layer, cover_path, scale)
         else:

@@ -43,7 +43,7 @@ class EconomistStaticSlideVideoTests(unittest.TestCase):
             self.assertEqual(landscape.getpixel((10, 900)), (38, 38, 38))
             self.assertEqual(portrait.getpixel((10, 1700)), (38, 38, 38))
             self.assertEqual(landscape.getpixel((1110, 45)), (255, 255, 255))
-            self.assertEqual(portrait.getpixel((173, 39)), (255, 255, 255))
+            self.assertEqual(portrait.getpixel((173, 80)), (255, 255, 255))
 
     def test_historical_article_requires_explicit_cover_override(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -69,8 +69,8 @@ class VisualSystemPreviewTests(unittest.TestCase):
             MODULE.render_template(
                 definition, "portrait_opening", cover,
                 {**MODULE.SAMPLE_CONTENT, "caption": {"current": {
-                    "en": "An English subtitle should wrap naturally into several centered visual lines when the full sentence requires it.",
-                    "zh": "带完整中文句号的长字幕，验证原生标点可以自然换行，并且不会把句号或者逗号放到新行的开头。",
+                    "en": "An English subtitle wraps naturally into two centered lines.",
+                    "zh": "完整中文字幕自然换成两行。",
                 }}},
                 1920, 1080, diagnostics,
             )
@@ -81,11 +81,11 @@ class VisualSystemPreviewTests(unittest.TestCase):
                     self.assertAlmostEqual(line_x + line_width / 2, x + width / 2, delta=2)
                 if item["layer"] == "caption_zh":
                     self.assertIn("Noto Sans SC", item["font"])
-                    self.assertEqual(item["font_weight"], "regular")
+                    self.assertEqual(item["font_weight"], "medium")
                     self.assertTrue(all(not line.startswith(tuple("，。！？；：、）》】〉〕〗」』")) for line in item["lines"]))
                 else:
-                    self.assertEqual(item["font"], "Arial/regular")
-                    self.assertEqual(item["font_weight"], "regular")
+                    self.assertEqual(item["font"], "Arial Bold/bold")
+                    self.assertEqual(item["font_weight"], "bold")
 
     def test_font_selection_covers_special_punctuation_and_mixed_latin_cjk_text(self):
         value = "Mixed ‘quotes’ “smart punctuation” ‑ – and 中文，。"
@@ -100,24 +100,22 @@ class VisualSystemPreviewTests(unittest.TestCase):
         self.assertIn("NOTOSANSSC-VF.TTF", path)
         self.assertTrue(MODULE.font_supports_text(path, value, weight="medium"))
 
-    def test_sentence_caption_can_use_more_than_two_visual_lines_and_stays_above_guide_content(self):
+    def test_portrait_caption_blocks_overlong_cues_instead_of_truncating(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cover = root / "cover.png"
             Image.new("RGB", (600, 800), "#A61919").save(cover)
             definition = MODULE.read_definition(MODULE.DEFAULT_DEFINITION)
             diagnostics = []
-            MODULE.render_template(
-                definition, "portrait_guide_questions", cover,
-                {**MODULE.SAMPLE_CONTENT, "caption": {"current": {
-                    "en": "This complete English sentence wraps over more than two visual lines in the narrow portrait caption rail without becoming several timed cues.",
-                    "zh": "这是一条完整的中文字幕，能够在狭窄的竖屏字幕栏中自然换成超过两行，而不被切成多个计时单元。",
-                }}},
-                1920, 1080, diagnostics,
-            )
-            captions = [item for item in diagnostics if item["layer"].startswith("caption_")]
-            self.assertGreater(sum(item["line_count"] for item in captions), 4)
-            self.assertTrue(all(not line.startswith(tuple("，。！？；：、）》】〉〕〗」』")) for line in next(item for item in captions if item["layer"] == "caption_zh")["lines"]))
+            with self.assertRaisesRegex(RuntimeError, "without truncation"):
+                MODULE.render_template(
+                    definition, "portrait_guide_questions", cover,
+                    {**MODULE.SAMPLE_CONTENT, "caption": {"current": {
+                        "en": "This complete English sentence is deliberately too long for the narrow portrait rail and must be split before rendering as a timed cue. " * 3,
+                        "zh": "这是一条过长的中文字幕，必须在进入竖屏渲染前拆成完整的计时单元。" * 3,
+                    }}},
+                    1920, 1080, diagnostics,
+                )
 
     def test_legacy_leading_punctuation_examples_are_never_produced_by_cjk_wrapping(self):
         fixture = Path(__file__).parent / "fixtures" / "legacy-leading-punctuation.json"
@@ -163,3 +161,34 @@ class VisualSystemPreviewTests(unittest.TestCase):
                     self.assertGreaterEqual(line_y, y)
                     self.assertLessEqual(line_x + line_width, x + width)
                     self.assertLessEqual(line_y + line_height, y + height)
+
+    def test_portrait_opening_metadata_flows_without_overlapping_the_caption_card(self):
+        definition = MODULE.read_definition(MODULE.DEFAULT_DEFINITION)
+        template = definition["templates"]["portrait_opening"]
+        canvas = Image.new("RGB", (1080, 1920), "#262626")
+        content = {
+            **MODULE.SAMPLE_CONTENT,
+            "article": {
+                **MODULE.SAMPLE_CONTENT["article"],
+                "headline": "A deliberately long portrait headline that wraps cleanly",
+                "headline_zh": "一个足够长的中文标题也必须完整显示并保持清晰间距",
+                "subtitle": "A supporting deck with enough words to exercise the portrait opening flow and its adaptive typography.",
+                "subtitle_zh": "一条较长的副标题用于验证竖屏首屏的动态排版。",
+            },
+            "caption": {"current": {"en": "A short cue.", "zh": "一条短字幕。"}},
+        }
+        layers = MODULE.prepare_portrait_opening_layers(
+            __import__("PIL.ImageDraw", fromlist=["ImageDraw"]).Draw(canvas),
+            template,
+            MODULE.layer_map(definition, "portrait_opening"),
+            content,
+            1920 / 720,
+        )
+        metadata_ids = ("headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline")
+        for previous, current in zip(metadata_ids, metadata_ids[1:]):
+            previous_box = layers[previous]["bbox"]
+            current_box = layers[current]["bbox"]
+            self.assertLessEqual(previous_box[1] + previous_box[3], current_box[1])
+        metadata_bottom = max(layers[name]["bbox"][1] + layers[name]["bbox"][3] for name in metadata_ids)
+        rail = next(item for item in template["layers"] if item["id"] == "subtitle_rail")
+        self.assertLessEqual(metadata_bottom + 8, rail["bbox"][1])

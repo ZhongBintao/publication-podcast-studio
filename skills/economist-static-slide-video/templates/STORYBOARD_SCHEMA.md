@@ -29,4 +29,8 @@ remain in the canonical SRT; they are not duplicated here.
   final WAV duration (within 0.05 s).
 - Every `asset.file` is package-relative and remains inside the production
   package. Only `issue_cover` and approved `article_asset` roles are legal.
-- Display translations may be empty, but their fixed portrait bands remain.
+- Display translations may be empty; the vertical renderer keeps the compact
+  information stack without restoring the removed utility labels or divider
+  lines. All slide images use contain placement and preserve their original
+  aspect ratio. The final 10% of a 9:16 frame is reserved for platform detail
+  overlays.

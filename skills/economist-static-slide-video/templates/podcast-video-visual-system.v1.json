@@ -1,7 +1,7 @@
 {
   "format": "static-video-template-definition",
   "schema_version": "1.1.0",
-  "name": "Podcast Video Visual System v1",
+  "name": "Podcast Video Visual System v2 · vertical-first",
   "source": {
     "file": "Podcast Video Visual System v1.pptx",
     "sha256": "0eeafbb7a239c0b8bf29f34e711f46e6021cf3ed5b674d1ce292254c916d2c18",
@@ -50,12 +50,17 @@
       "line_spacing_percent": 115,
       "safe_insets_px": { "landscape": [96, 96], "portrait": [54, 54] }
     },
+    "portrait_safe_area": {
+      "platform_detail_bottom_percent": 10,
+      "caption_bottom_inset_percent": 12,
+      "caption_max_lines_per_language": 2
+    },
     "decorative_style": {
       "page": "landscape and portrait use the flat #262626 background; neither uses texture or gradient",
       "text_boxes": "transparent rectangular shapes with no outline",
       "subtitle_rail": "PowerPoint roundRect with adjustment 0, visually a square-cornered full-width dark band; no outline",
-      "cover_image": "unmasked rectangular picture using the source file's stretch fill; the source cover has no additional frame, border or shadow",
-      "portrait_spacing": "The portrait opening deliberately reserves separate vertical bands for cover, kicker, English title, Chinese title translation, English subtitle, Chinese subtitle translation, byline and captions. Do not collapse these bands."
+      "cover_image": "Unmasked rectangular picture using contain placement. Every source image keeps its original aspect ratio and is never cropped or distorted; letterboxing is acceptable.",
+      "portrait_spacing": "The portrait opening uses a compact free-flow stack: a contained image, reduced metadata, an information block, and a two-language caption rail above the bottom 10% platform detail area. No decorative divider lines or top utility text are rendered."
     }
   },
   "templates": {
@@ -145,7 +150,7 @@
           "z_index": 8,
           "bbox": [774.27, 42, 333.39, 445],
           "content_binding": "article.issue_cover.file",
-          "fit": "stretch",
+          "fit": "contain",
           "style": { "stroke": "none", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_px": 2 }
         }
       ]
@@ -154,8 +159,18 @@
       "source_slide": 2,
       "canvas": { "width": 1280, "height": 720, "aspect_ratio": "16:9" },
       "inherits": ["landscape_opening.subtitle_rail", "landscape_opening.caption_en", "landscape_opening.caption_zh", "landscape_opening.issue_cover"],
-      "source_layer_order": ["subtitle_rail", "caption_en", "caption_zh", "issue_cover", "guide_question_2", "guide_question_1"],
+      "source_layer_order": ["subtitle_rail", "caption_en", "caption_zh", "issue_cover", "guide_question_1_number", "guide_question_1", "guide_question_2_number", "guide_question_2"],
       "layers": [
+        {
+          "id": "guide_question_1_number",
+          "source_object_id": "4-number",
+          "kind": "text",
+          "z_index": 8,
+          "bbox": [45, 42, 30, 24],
+          "text": "01",
+          "vertical_alignment": "top",
+          "style": { "font": "Arial", "font_size_pt": 14, "color": "#D71920", "bold": false, "line_spacing_percent": 100, "wrap": "none", "alignment": "left" }
+        },
         {
           "id": "guide_question_1",
           "source_object_id": "6",
@@ -163,6 +178,7 @@
           "z_index": 6,
           "bbox": [80, 42, 584, 144],
           "content_binding": ["guide_questions[0].question", "guide_questions[0].translation_zh"],
+          "vertical_alignment": "top",
           "paragraphs": [
             { "binding": "guide_questions[0].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 24, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 110 },
             { "binding": "guide_questions[0].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 18, "color": "#FFFFFF", "bold": false }
@@ -177,12 +193,23 @@
           "z_index": 5,
           "bbox": [80, 249.24, 584, 144],
           "content_binding": ["guide_questions[1].question", "guide_questions[1].translation_zh"],
+          "vertical_alignment": "top",
           "paragraphs": [
             { "binding": "guide_questions[1].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 24, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 110 },
             { "binding": "guide_questions[1].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 18, "color": "#FFFFFF", "bold": false }
           ],
           "line_spacing_percent": 125,
           "wrap": "square"
+        },
+        {
+          "id": "guide_question_2_number",
+          "source_object_id": "5-number",
+          "kind": "text",
+          "z_index": 9,
+          "bbox": [45, 249.24, 30, 24],
+          "text": "02",
+          "vertical_alignment": "top",
+          "style": { "font": "Arial", "font_size_pt": 14, "color": "#D71920", "bold": false, "line_spacing_percent": 100, "wrap": "none", "alignment": "left" }
         }
       ]
     },
@@ -190,6 +217,7 @@
       "source_slide": 3,
       "canvas": { "width": 405.33, "height": 720, "aspect_ratio": "9:16" },
       "source_frame_in_pptx_canvas": [437.33, -1.58, 405.33, 720],
+      "platform_safe_bottom_percent": 10,
       "source_layer_order": ["portrait_page_panel", "subtitle_rail", "caption_en", "caption_zh", "issue_cover", "kicker", "headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline"],
       "layers": [
         {
@@ -207,91 +235,93 @@
           "source_object_id": "3",
           "kind": "text",
           "z_index": 6,
-          "bbox": [37.07, 326, 140, 22],
+          "bbox": [37.07, 242, 180, 16],
           "content_binding": "article.kicker",
-          "style": { "font": "Arial", "font_size_pt": 16, "color": "#D71920", "bold": false, "line_spacing_percent": 125, "wrap": "none" }
+          "style": { "font": "Arial", "font_size_pt": 10, "color": "#D71920", "bold": false, "line_spacing_percent": 100, "wrap": "none" }
         },
         {
           "id": "headline",
           "source_object_id": "6",
           "kind": "text",
           "z_index": 7,
-          "bbox": [37.07, 370, 300, 52],
+          "bbox": [37.07, 268, 331.2, 90],
           "content_binding": "article.headline",
-          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Serif SC" }, "font_size_pt": 28, "color": "#FFFFFF", "bold": true, "line_spacing_percent": 125, "wrap": "square" }
+          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Serif SC" }, "font_size_pt": 24, "min_font_size_pt": 18, "max_lines": 3, "color": "#FFFFFF", "bold": true, "line_spacing_percent": 103, "wrap": "adaptive", "alignment": "left" }
         },
         {
           "id": "headline_zh",
           "source_object_id": "6-adaptation-zh",
           "kind": "text",
           "z_index": 8,
-          "bbox": [37.07, 416, 300, 24],
+          "bbox": [37.07, 344, 331.2, 46],
           "content_binding": "article.headline_zh",
-          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Serif SC" }, "font_size_pt": 16, "color": "#FFFFFF", "bold": true, "line_spacing_percent": 125, "wrap": "square" }
+          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Serif SC" }, "font_size_pt": 15, "min_font_size_pt": 11, "max_lines": 2, "color": "#E2DFD8", "bold": false, "line_spacing_percent": 105, "wrap": "adaptive", "alignment": "left" }
         },
         {
           "id": "subtitle",
           "source_object_id": "7",
           "kind": "text",
           "z_index": 9,
-          "bbox": [37.07, 464, 331.2, 32],
+          "bbox": [37.07, 379, 331.2, 66],
           "content_binding": "article.subtitle",
-          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 16, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 125, "wrap": "square" }
+          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 12, "min_font_size_pt": 8, "max_lines": 2, "color": "#B7B4AD", "bold": false, "line_spacing_percent": 112, "wrap": "adaptive", "alignment": "left" }
         },
         {
           "id": "subtitle_zh",
           "source_object_id": "7-adaptation-zh",
           "kind": "text",
           "z_index": 10,
-          "bbox": [37.07, 507, 331.2, 20],
+          "bbox": [37.07, 430, 331.2, 40],
           "content_binding": "article.subtitle_zh",
-          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 14, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 125, "wrap": "square" }
+          "style": { "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 10, "min_font_size_pt": 7, "max_lines": 2, "color": "#8C8A83", "bold": false, "line_spacing_percent": 112, "wrap": "adaptive", "alignment": "left" }
         },
         {
           "id": "byline_dateline",
           "source_object_id": "8",
           "kind": "text",
           "z_index": 11,
-          "bbox": [37.07, 544, 331.2, 16],
+          "bbox": [37.07, 469, 331.2, 20],
           "content_binding": "article.byline_dateline_issue",
-          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 11, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 125, "wrap": "none" }
+          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 7, "color": "#686B65", "bold": false, "line_spacing_percent": 100, "wrap": "none" }
         },
         {
           "id": "subtitle_rail",
           "source_object_id": "13",
           "kind": "shape",
           "z_index": 2,
-          "bbox": [0, 548, 405.33, 172],
+          "bbox": [32.43, 525.6, 340.47, 108],
           "geometry": "square_cornered_round_rect",
           "fill": "#262626",
-          "stroke": "none"
+          "stroke": "none",
+          "stroke_width_px": 0,
+          "corner_radius_px": 4
         },
         {
           "id": "caption_en",
           "source_object_id": "15",
           "kind": "text",
           "z_index": 3,
-          "bbox": [13.33, 556, 378.67, 72],
+          "bbox": [44, 555, 317.33, 45],
           "content_binding": "caption.current.en",
-          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 18, "min_font_size_pt": 10, "unbounded_lines": true, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 115, "wrap": "adaptive", "alignment": "center" }
+          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 12, "min_font_size_pt": 9, "max_lines": 2, "unbounded_lines": false, "color": "#FFFFFF", "bold": true, "font_weight": "bold", "line_spacing_percent": 105, "text_insets_px": [0, 0, 0, 0], "letter_spacing": 0, "wrap": "adaptive", "alignment": "center", "stroke_color": "#FFFFFF", "stroke_width_px": 0 }
         },
         {
           "id": "caption_zh",
           "source_object_id": "16",
           "kind": "text",
           "z_index": 4,
-          "bbox": [13.33, 636, 378.67, 76],
+          "bbox": [44, 604, 317.33, 38],
           "content_binding": "caption.current.zh",
-          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 18, "min_font_size_pt": 10, "unbounded_lines": true, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 115, "wrap": "adaptive", "alignment": "center" }
+          "style": { "font": { "latin": "Arial", "east_asian": "Noto Sans SC" }, "font_size_pt": 11, "min_font_size_pt": 8, "max_lines": 2, "unbounded_lines": false, "color": "#FFFFFF", "bold": false, "font_weight": "medium", "line_spacing_percent": 105, "text_insets_px": [0, 0, 0, 0], "letter_spacing": 0, "wrap": "adaptive", "alignment": "center", "stroke_color": "#FFFFFF", "stroke_width_px": 0 }
         },
         {
           "id": "issue_cover",
           "source_object_id": "17",
           "kind": "image",
           "z_index": 5,
-          "bbox": [89.28, 8, 226.77, 302.81],
+          "bbox": [52.67, 40.32, 300, 180],
           "content_binding": "article.issue_cover.file",
-          "fit": "stretch",
+          "fit": "contain",
           "style": { "stroke": "none", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_px": 2 }
         }
       ]
@@ -300,8 +330,9 @@
       "source_slide": 4,
       "canvas": { "width": 405.33, "height": 720, "aspect_ratio": "9:16" },
       "source_frame_in_pptx_canvas": [437.33, -1.58, 405.33, 720],
+      "platform_safe_bottom_percent": 10,
       "inherits": ["portrait_opening.subtitle_rail", "portrait_opening.caption_en", "portrait_opening.caption_zh", "portrait_opening.issue_cover"],
-      "source_layer_order": ["portrait_page_panel", "subtitle_rail", "caption_en", "caption_zh", "issue_cover", "guide_question_1", "guide_question_2"],
+      "source_layer_order": ["portrait_page_panel", "subtitle_rail", "caption_en", "caption_zh", "issue_cover", "guide_question_1_number", "guide_question_1", "guide_question_2_number", "guide_question_2"],
       "layers": [
         {
           "id": "portrait_page_panel",
@@ -314,31 +345,53 @@
           "stroke": "none"
         },
         {
+          "id": "guide_question_1_number",
+          "source_object_id": "4-number",
+          "kind": "text",
+          "z_index": 6,
+          "bbox": [37.07, 250, 21, 16],
+          "text": "01",
+          "vertical_alignment": "top",
+          "style": { "font": "Arial", "font_size_pt": 10, "color": "#D71920", "bold": false, "line_spacing_percent": 100, "wrap": "none", "alignment": "left" }
+        },
+        {
           "id": "guide_question_1",
           "source_object_id": "4",
           "kind": "multilingual_text",
           "z_index": 6,
-          "bbox": [26.67, 319.86, 352, 82.16],
+          "bbox": [65, 250, 303.33, 106],
           "content_binding": ["guide_questions[0].question", "guide_questions[0].translation_zh"],
+          "vertical_alignment": "top",
           "paragraphs": [
-            { "binding": "guide_questions[0].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 12, "color": "#FFFFFF", "bold": false },
-            { "binding": "guide_questions[0].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 10, "color": "#FFFFFF", "bold": false }
+            { "binding": "guide_questions[0].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 14, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 103 },
+            { "binding": "guide_questions[0].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 9, "color": "#96948D", "bold": false, "line_spacing_percent": 135 }
           ],
-          "line_spacing_percent": 125,
+          "line_spacing_percent": 112,
           "wrap": "square"
+        },
+        {
+          "id": "guide_question_2_number",
+          "source_object_id": "5-number",
+          "kind": "text",
+          "z_index": 7,
+          "bbox": [37.07, 370, 21, 16],
+          "text": "02",
+          "vertical_alignment": "top",
+          "style": { "font": "Arial", "font_size_pt": 10, "color": "#D71920", "bold": false, "line_spacing_percent": 100, "wrap": "none", "alignment": "left" }
         },
         {
           "id": "guide_question_2",
           "source_object_id": "5",
           "kind": "multilingual_text",
           "z_index": 7,
-          "bbox": [26.67, 453.82, 352, 82.16],
+          "bbox": [65, 370, 303.33, 106],
           "content_binding": ["guide_questions[1].question", "guide_questions[1].translation_zh"],
+          "vertical_alignment": "top",
           "paragraphs": [
-            { "binding": "guide_questions[1].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 12, "color": "#FFFFFF", "bold": false },
-            { "binding": "guide_questions[1].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 10, "color": "#FFFFFF", "bold": false }
+            { "binding": "guide_questions[1].question", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 14, "color": "#FFFFFF", "bold": false, "line_spacing_percent": 103 },
+            { "binding": "guide_questions[1].translation_zh", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 9, "color": "#96948D", "bold": false, "line_spacing_percent": 135 }
           ],
-          "line_spacing_percent": 125,
+          "line_spacing_percent": 112,
           "wrap": "square"
         }
       ]
@@ -346,7 +399,7 @@
   },
   "content_contract": {
     "article": ["kicker", "headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline_issue", "issue_cover.file"],
-    "guide_questions": "Exactly two entries; each entry has question and translation_zh.",
+    "guide_questions": "Exactly two entries; each entry has question and translation_zh. Both landscape and portrait templates prefix fixed red 01 and 02 markers.",
     "caption": "Use the canonical timed cue. For en use caption.current.en; for zh-CN use caption.current.zh; for en-zh display both in the fixed English-then-Chinese order."
   },
   "template_selection": {

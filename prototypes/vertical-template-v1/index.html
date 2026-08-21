@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vertical Editorial Layout — Prototype v2</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="prototype-header">
+        <div>
+          <p class="eyebrow">ECONOMIST PODCAST STUDIO · LAYOUT LAB</p>
+          <h1>竖屏自由布局 <span>v2</span></h1>
+          <p class="lede">一张完整的编辑卡片：图片、文章信息、导读问题、字幕与平台安全位各自拥有清晰边界。</p>
+        </div>
+        <div class="status-pill"><i></i> prototype only · no plugin changes</div>
+      </header>
+
+      <section class="workspace" aria-label="Vertical template prototype">
+        <aside class="control-panel">
+          <div class="panel-heading">
+            <span class="section-index">01</span>
+            <div>
+              <p class="panel-kicker">Preview controls</p>
+              <h2>查看布局与安全边界</h2>
+            </div>
+          </div>
+
+          <div class="control-group">
+              <label>叙事状态</label>
+            <div class="segmented" role="group" aria-label="画面状态">
+              <button class="segment is-active" data-layout="opening" aria-pressed="true">文章开场</button>
+              <button class="segment" data-layout="questions" aria-pressed="false">导读问题</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+              <label>字幕显示</label>
+            <div class="segmented" role="group" aria-label="字幕模式">
+              <button class="segment is-active" data-language="bilingual" aria-pressed="true">英中双语</button>
+              <button class="segment" data-language="english" aria-pressed="false">English only</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label>极端数据（参考写稿限制）</label>
+            <div class="segmented three-way" role="group" aria-label="极端数据">
+              <button class="segment is-active" data-case="normal" aria-pressed="true">正常</button>
+              <button class="segment" data-case="limit" aria-pressed="false">临界</button>
+              <button class="segment" data-case="over" aria-pressed="false">超限</button>
+            </div>
+            <p class="constraint-note">导读 8–22 英语词 · 英文字幕 ≤84 字符 · 中文字幕 ≤48 字符</p>
+          </div>
+
+          <div class="control-group">
+            <label>图片比例</label>
+            <div class="segmented three-way" role="group" aria-label="图片比例">
+              <button class="segment is-active" data-image="wide" aria-pressed="true">横图</button>
+              <button class="segment" data-image="portrait" aria-pressed="false">竖图</button>
+              <button class="segment" data-image="cover" aria-pressed="false">16:9</button>
+            </div>
+          </div>
+
+          <div class="control-group toggles">
+            <label class="toggle-row">
+              <span><strong>安全区标线</strong><small>查看字幕与底部的距离</small></span>
+              <input type="checkbox" data-toggle="safe" checked />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="toggle-row">
+              <span><strong>平台详情遮挡</strong><small>模拟视频下方详情面板</small></span>
+              <input type="checkbox" data-toggle="platform" checked />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="control-group timeline-control">
+            <div class="timeline-label"><label for="progress">模拟播放进度</label><span id="timecode">00:12 / 08:42</span></div>
+            <input id="progress" type="range" min="0" max="100" value="20" />
+            <div class="timeline-ruler"><span>开场</span><span>字幕 cue</span><span>结尾</span></div>
+          </div>
+
+          <button class="next-cue" type="button" data-action="next-cue">
+            <span>换一条代表性字幕</span>
+            <span class="arrow">↗</span>
+          </button>
+
+          <div class="principles">
+            <p class="panel-kicker">Layout blueprint</p>
+            <div class="principle"><span>01</span><strong>视觉区</strong><em>图片只占上方 31%，不压迫标题</em></div>
+            <div class="principle"><span>02</span><strong>信息区</strong><em>元数据、双语标题、署名独立排列</em></div>
+            <div class="principle"><span>03</span><strong>字幕区</strong><em>与平台底部详情保持 10% 距离</em></div>
+          </div>
+
+          <div class="validation-card">
+            <p class="panel-kicker">Content preflight</p>
+            <div class="metric-row"><span>导读问题</span><strong id="question-metric">—</strong></div>
+            <div class="metric-row"><span>英文字幕</span><strong id="english-metric">—</strong></div>
+            <div class="metric-row"><span>中文字幕</span><strong id="chinese-metric">—</strong></div>
+            <div class="validation-status" id="validation-status">等待测试数据</div>
+          </div>
+        </aside>
+
+        <div class="preview-area">
+          <div class="preview-meta">
+            <div><span class="meta-dot"></span> 9:16 vertical · safe-zone experiment</div>
+            <div class="preview-size">1080 × 1920</div>
+          </div>
+
+          <div class="phone-stage">
+            <div class="phone-frame">
+              <div class="phone-speaker"></div>
+              <div class="phone-screen" data-layout-state="opening" data-language-state="bilingual">
+                <div class="image-slot">
+                  <img src="../../output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="Coins and a red scarf, representative article image" />
+                  <span class="image-label" id="image-label">ARTICLE IMAGE · LANDSCAPE</span>
+                </div>
+
+                <div class="opening-copy">
+                  <div class="section-row"><p class="kicker">BILLIONAIRES</p></div>
+                  <h2>The rise of the<br />deserving rich</h2>
+                  <p class="title-zh">配得上财富吗？</p>
+                  <div class="dek-pair">
+                    <p class="dek">The source of billionaires’ wealth is changing for the better</p>
+                    <p class="dek-zh">亿万富豪的财富来源正在变得更光明</p>
+                  </div>
+                  <div class="byline-row"><p class="byline">THE ECONOMIST · JULY 25TH 2026</p></div>
+                </div>
+
+                <div class="question-copy" aria-hidden="true">
+                  <div class="question-card"><span>01</span><div><p>What makes a fortune feel deserved?</p><small>什么样的财富会被认为是应得的？</small></div></div>
+                  <div class="question-card"><span>02</span><div><p>Can a new story change the politics of wealth?</p><small>新的财富叙事，能改变政治吗？</small></div></div>
+                </div>
+
+                <div class="preflight-block" aria-live="polite">
+                  <span>RENDER BLOCKED</span>
+                  <strong>先在写稿阶段拆分内容</strong>
+                  <small>超过硬限制时不压缩、不截断，也不让文字侵入字幕安全带。</small>
+                </div>
+
+                <div class="caption-zone" aria-live="polite">
+                  <p class="caption-en">For decades, wealth was framed as a reward for risk. Now that argument is shifting.</p>
+                  <p class="caption-zh">几十年来，财富常被描述成承担风险后的回报。如今，这种说法正在改变。</p>
+                </div>
+
+                <div class="safe-zone-guide" aria-hidden="true">
+                  <span>PLATFORM SAFE ZONE · 10%</span>
+                </div>
+                <div class="platform-overlay" aria-hidden="true">
+                  <div class="overlay-grip"></div>
+                  <strong>平台详情文章区域</strong>
+                  <span>底部 10% 作为不可用空间 · 重要信息不放入此区</span>
+                </div>
+                <div class="bottom-brand">E</div>
+              </div>
+              <div class="home-indicator"></div>
+            </div>
+
+            <div class="stage-callouts" aria-hidden="true">
+              <div class="callout callout-image"><span></span><b>58% image width</b><em>小图片，留出呼吸空间</em></div>
+              <div class="callout callout-caption"><span></span><b>caption safe rail</b><em>字幕在平台遮挡线上方</em></div>
+            </div>
+          </div>
+
+          <div class="preview-footer">
+            <span>Sample subtitle: <strong id="cue-number">01</strong> / 03</span>
+            <span class="footer-rule"></span>
+            <span>Dark field · white type · Economist red</span>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="./prototype.js"></script>
+  </body>
+</html>

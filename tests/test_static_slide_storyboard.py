@@ -113,6 +113,24 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.StoryboardError, "does not belong"):
                 MODULE.build_storyboard(production, editorial_assets, root / "other-storyboard.json", 1.0)
 
+    def test_verified_article_image_is_selected_and_read_time_is_not_emitted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            Image.new("RGB", (667, 938), "#29616c").save(root / "assets" / "article.png")
+            article_path = root / "article.json"
+            article = json.loads(article_path.read_text(encoding="utf-8"))
+            article["article_pages"] = [69, 70]
+            article["assets"] = [{"role": "article_image", "file": "assets/article.png"}]
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+            storyboard = MODULE.build_storyboard(production, questions, root / "storyboard.json", 1.0)
+            self.assertEqual(storyboard["slides"][0]["asset"], {"role": "article_asset", "file": "assets/article.png"})
+            content = MODULE.display_content(article, storyboard, "English cue.", "中文 cue。")
+            self.assertNotIn("page_label", content["article"])
+            self.assertNotIn("MIN READ", json.dumps(content, ensure_ascii=False))
+            self.assertNotIn("number", content["guide_questions"][0])
+            self.assertNotIn("number", content["guide_questions"][1])
+
     def test_legacy_srt_is_consumed_without_repartitioning_text_or_time(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "legacy.srt"
