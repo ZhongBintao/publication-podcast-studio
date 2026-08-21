@@ -162,7 +162,7 @@ def build_storyboard(production_path: Path, questions_path: Path, storyboard_pat
         "guide_questions": questions,
         "slides": [
             {"id": "opening", "template_role": "opening", "start_seconds": 0, "end_seconds": round(opening_end, 3), "asset": {"role": "issue_cover", "file": cover}, "source_paragraph_ids": []},
-            {"id": "guide-questions", "template_role": "guide_questions", "start_seconds": round(opening_end, 3), "end_seconds": round(duration, 3), "asset": {"role": "issue_cover", "file": cover}, "source_paragraph_ids": source_ids},
+            {"id": "guide-questions", "template_role": "guide_questions", "start_seconds": round(opening_end, 3), "end_seconds": duration, "asset": {"role": "issue_cover", "file": cover}, "source_paragraph_ids": source_ids},
         ],
     }
     validate_storyboard(storyboard, duration)

@@ -36,7 +36,7 @@ TICKS_PER_SECOND = 10_000_000
 MIN_CUE_SECONDS = 1.5
 MAX_CUE_SECONDS = 7.0
 MAX_ENGLISH_CHARS = 84
-MAX_CHINESE_CHARS = 32
+MAX_CHINESE_CHARS = 48
 
 
 class MediaError(RuntimeError):
@@ -614,13 +614,15 @@ def reviewed_bilingual_cues_legacy(alignment: dict[str, Any], subtitle_script: d
 
 
 def reviewed_bilingual_cues(alignment: dict[str, Any], subtitle_script: Any) -> list[dict[str, Any]]:
-    """Project reviewed complete-sentence units onto the English WordBoundary clock."""
+    """Project reviewed sentence or captionable-clause units onto WordBoundary timing."""
     if not isinstance(subtitle_script, dict) or subtitle_script.get("translation_quality") != "reviewed":
         raise MediaError("en-zh publication captions require a reviewed subtitle script.")
     if str(subtitle_script.get("schema_version")) == "1.0":
         return reviewed_bilingual_cues_legacy(alignment, subtitle_script)
-    if str(subtitle_script.get("schema_version")) != "2.0" or subtitle_script.get("caption_unit_policy") != "full_sentence":
-        raise MediaError("en-zh publication captions require the 2.0 full-sentence subtitle contract.")
+    schema_version = str(subtitle_script.get("schema_version"))
+    policy = subtitle_script.get("caption_unit_policy")
+    if (schema_version, policy) not in {("2.0", "full_sentence"), ("3.0", "captionable_clause")}:
+        raise MediaError("en-zh publication captions require the 2.0 full-sentence or 3.0 captionable-clause subtitle contract.")
     units = subtitle_script.get("units")
     if not isinstance(units, list) or not units:
         raise MediaError("Reviewed subtitle script has no units.")
@@ -634,7 +636,7 @@ def reviewed_bilingual_cues(alignment: dict[str, Any], subtitle_script: Any) -> 
     for unit in units:
         required = {"unit_id", "source_text", "source_spans", "source_paragraph_ids", "translation_zh"}
         if not isinstance(unit, dict) or not required.issubset(unit) or not isinstance(unit["source_spans"], list) or not unit["source_spans"]:
-            raise MediaError("Reviewed sentence subtitle unit has an invalid contract.")
+            raise MediaError("Reviewed bilingual subtitle unit has an invalid contract.")
         chinese = str(unit["translation_zh"]).strip()
         if not chinese or "\n" in chinese or "\r" in chinese:
             raise MediaError("Reviewed Chinese subtitle text must be one non-empty logical line.")
@@ -646,17 +648,17 @@ def reviewed_bilingual_cues(alignment: dict[str, Any], subtitle_script: Any) -> 
         segment_ids: list[str] = []
         for span in unit["source_spans"]:
             if not isinstance(span, dict) or set(span) != {"segment_id", "source_start", "source_end"}:
-                raise MediaError("Reviewed sentence subtitle source spans are invalid.")
+                raise MediaError("Reviewed bilingual subtitle source spans are invalid.")
             segment_id = str(span["segment_id"])
             if segment_index >= len(order) or segment_id != order[segment_index]:
-                raise MediaError("Reviewed sentence subtitle units are out of source order.")
+                raise MediaError("Reviewed bilingual subtitle units are out of source order.")
             segment = segments[segment_id]
             spoken = str(segment["spoken_text"])
             start, end = span["source_start"], span["source_end"]
             if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > len(spoken):
-                raise MediaError("Reviewed sentence subtitle source span does not match the frozen English script.")
+                raise MediaError("Reviewed bilingual subtitle source span does not match the frozen English script.")
             if spoken[cursor:start].strip():
-                raise MediaError("Reviewed sentence subtitle units do not completely cover the English script.")
+                raise MediaError("Reviewed bilingual subtitle units do not completely cover the English script.")
             selected = spoken[start:end]
             if not selected.strip():
                 raise MediaError("Reviewed sentence subtitle source span is empty.")
@@ -672,11 +674,13 @@ def reviewed_bilingual_cues(alignment: dict[str, Any], subtitle_script: Any) -> 
                 cursor = 0
         source_text = " ".join(selected_parts)
         if re.sub(r"\s+", " ", str(unit["source_text"])).strip() != source_text:
-            raise MediaError("Reviewed sentence subtitle text does not match its frozen source spans.")
+            raise MediaError("Reviewed bilingual subtitle text does not match its frozen source spans.")
         if unit["source_paragraph_ids"] != paragraph_ids:
-            raise MediaError("Reviewed sentence subtitle source links do not match the frozen English segments.")
-        if not re.search(r"[.!?][\"')\]}”’]*$", source_text):
-            raise MediaError("Reviewed subtitle unit must be a complete English sentence.")
+            raise MediaError("Reviewed bilingual subtitle source links do not match the frozen English segments.")
+        if not re.search(r"[.!?;][\"')\]}”’]*$", source_text):
+            raise MediaError("Reviewed subtitle unit must be a complete English sentence or self-contained clause.")
+        if schema_version == "3.0" and (len(source_text) > MAX_ENGLISH_CHARS or len(chinese) > MAX_CHINESE_CHARS):
+            raise MediaError("Reviewed subtitle unit exceeds the configured two-line display budget.")
         if re.search(r"[A-Za-z]{4,}\s+[A-Za-z]{4,}", chinese):
             raise MediaError("Reviewed Chinese subtitle contains an English clause.")
         if not words:
@@ -691,7 +695,7 @@ def reviewed_bilingual_cues(alignment: dict[str, Any], subtitle_script: Any) -> 
         })
         previous_end = cue_end
     if segment_index != len(order):
-        raise MediaError("Reviewed sentence subtitle units do not completely cover the English script.")
+        raise MediaError("Reviewed bilingual subtitle units do not completely cover the English script.")
     return result
 
 

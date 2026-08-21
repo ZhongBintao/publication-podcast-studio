@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -21,8 +23,10 @@ from editorial_assets import editorial_request, finalise as finalise_editorial_a
 
 ALLOWED_FIELDS = {"segment_id", "speaker_id", "kind", "spoken_text", "source_paragraph_ids"}
 SPEAKERS = {"primary", "secondary"}
-ALLOWED_KINDS = {"verbatim", "sentence_split"}
-BODY_KINDS = {"verbatim", "sentence_split"}
+FACTUAL_KINDS = {"verbatim", "sentence_split"}
+INTERACTION_KINDS = {"reaction", "prompt"}
+ALLOWED_KINDS = FACTUAL_KINDS | INTERACTION_KINDS
+BODY_KINDS = ALLOWED_KINDS
 VISUAL_REFERENCE = re.compile(
     r"\s*\(\s*(?:see|see also)\s+(?:the\s+)?(?:chart|table|figure|next article|next page)[^)]*\)",
     re.IGNORECASE,
@@ -36,10 +40,21 @@ COMMA_WRAPPED_AMOUNT = re.compile(
 )
 BRACKET_PAIRS = {"(": ")", "（": "）", "[": "]", "［": "］"}
 SPOKEN_BRACKETS = re.compile(r"[()\[\]（）［］]")
-MAX_ENGLISH_SEGMENT_CHARS = 280
+MAX_ENGLISH_SEGMENT_CHARS = 220
+MAX_CAPTION_UNIT_CHARS = 84
+MAX_CHINESE_CAPTION_CHARS = 48
+MIN_BALANCED_ENGLISH_WORDS = 120
+MIN_INTERACTION_FACTUAL_SEGMENTS = 8
+MIN_INTERACTION_SEGMENTS = 2
+MAX_CONSECUTIVE_ENGLISH_SEGMENTS = 3
+MIN_ENGLISH_WORD_SHARE = 0.40
+MAX_ENGLISH_WORD_SHARE = 0.60
+TARGET_ENGLISH_WORD_SHARE = 0.50
+MAX_REACTION_WORDS = 12
+MAX_PROMPT_WORDS = 16
 APPROVED_ENGLISH_FILLER_TOKENS = {
-    "actually", "and", "basically", "exactly", "honestly", "just", "look",
-    "okay", "really", "right", "so", "sure", "totally", "well",
+    "actually", "basically", "exactly", "honestly", "look", "okay", "right",
+    "so", "sure", "well",
 }
 APPROVED_ENGLISH_FILLER_PHRASES = (
     ("of", "course"),
@@ -61,16 +76,58 @@ CONTRACTION_EXPANSIONS = {
     "you'd": ("you", "would"), "you'll": ("you", "will"), "you're": ("you", "are"),
     "you've": ("you", "have"), "gonna": ("going", "to"),
 }
-ENGLISH_STYLE_INSTRUCTIONS = (
-    "Write a source-linked spoken narration that sounds like prepared hosts talking through a story. "
-    "Use short, direct clauses and split long sentences at natural pauses. Prefer contractions and relaxed "
-    "connectors. You may use a light, non-factual marker such as well, so, right, you know, I mean, "
-    "actually, honestly, exactly, okay, look, sure, of course, or basically, but use them sparingly and "
-    "never repeat a filler mechanically. Preserve every source fact, number, attribution, condition and "
-    "judgment. Do not add questions, answers, commentary, examples, conclusions, hand-offs or new facts. "
-    "Return only source-linked body segments using exactly the five script fields and keep each paragraph "
-    "with its supplied speaker_id."
-)
+ENGLISH_STYLE_INSTRUCTIONS = """You are the English writing stage for a source-bounded, two-host Economist podcast.
+
+Turn each supplied verified source paragraph into a natural spoken exchange. The supplied paragraphs define the evidence boundary, not a wording template. The result should sound like two attentive hosts talking through a reported story, never like an article being read aloud.
+
+SOURCE-BOUNDED ADAPTATION
+
+- You may freely paraphrase, condense, reorder related clauses within the supplied paragraph, merge or split sentences, simplify nominalisations, and replace formal written syntax with natural spoken English.
+- Do not invent any factual proposition, sentence, quotation, number, attribution, causal link, evaluation, example, prediction, analogy, conclusion, or host viewpoint that is not supported by the supplied paragraph.
+- Do not create a disagreement, personal experience, guest opinion, or broad generalisation that the source does not support.
+- Do not treat source wording, punctuation, sentence order, or every source token as mandatory. Do not restore omitted wording merely to imitate the article.
+- Do not use generic praise, exaggerated reactions, or filler-heavy performance. A light conversational tone is useful only when it keeps the exchange natural and source-bounded.
+
+HOST ROLES AND BALANCE
+
+- source_speaker_id and partner_speaker_id are suggested host roles for the paragraph, not fixed speaker assignments. Either host may deliver factual units, and one source paragraph may contain factual turns from both hosts.
+- Share substantive narration between primary and secondary. Aim for 45%--55% of total English words per host; stay within 40%--60% for a normal-length script. Do not make one host a question-only or reaction-only voice.
+- Use short turns, natural questions, answers, and responses. Avoid more than three consecutive segments by the same host unless a single idea genuinely needs two adjacent units.
+- For a script with at least eight factual segments, include at least two useful interactions and give both hosts an interaction opportunity. Do not insert an interaction after every sentence.
+- A prompt must be spoken by one host and be immediately followed by a factual answer from the other host. A reaction may acknowledge or frame the current source point, but must not add a claim or viewpoint.
+
+ORAL STYLE AND TOPIC PROGRESSION
+
+- Prefer direct verbs, short clauses, contractions, concrete subjects, and natural pauses.
+- Avoid the written pattern “noun, explanatory phrase;” or “noun, short definition,” especially when it creates a dangling subtitle unit. When context is needed, integrate it into a complete spoken clause or use two natural sentences.
+- Do not stack appositives, parentheticals, nominalisations, or long modifier chains after a noun.
+- Use light markers such as well, so, right, you know, I mean, actually, honestly, exactly, okay, look, sure, of course, and basically sparingly. They must not carry facts or disguise a missing sentence.
+- Keep necessary professional terms, but simplify the surrounding sentence rather than adding an outside definition.
+- Move between source paragraphs with a short source-linked bridge only when it improves listener orientation.
+
+LONG-SENTENCE AND CAPTION ADAPTATION
+
+- Rewrite long written sentences before splitting them. Do not mechanically cut a sentence at the character limit.
+- Split at a complete semantic boundary: contrast, cause, condition, attribution, list boundary, time shift, or consequence.
+- Every segment must be understandable when heard once and must be a complete sentence or self-contained spoken clause.
+- Never end a segment with a comma, colon, dash, or dangling semicolon. Do not use a synthetic semicolon to turn a fragment into a caption unit.
+- Every spoken segment must be no longer than max_spoken_segment_chars. Every captionable unit must be no longer than max_caption_unit_chars.
+- Treat these limits as hard production constraints. If a written sentence cannot fit naturally, rewrite it into shorter complete spoken sentences before returning the draft.
+
+OUTPUT CONTRACT
+
+Return only a JSON array. Every object must contain exactly: segment_id, speaker_id, kind, spoken_text, and source_paragraph_ids.
+
+Use these kinds:
+
+- verbatim: a concise source-bounded factual unit that may still be lightly reworded
+- sentence_split: a source-bounded factual unit created by oralising or splitting a longer written sentence
+- reaction: a short, natural, source-linked response with no new claim or viewpoint
+- prompt: a short, natural, source-linked question that the immediately following factual unit answers
+
+Every segment must reference exactly one supplied paragraph ID. Factual segments may use either speaker. Interaction segments may use either speaker, but a prompt must be followed immediately by a factual segment from the other speaker. Keep reactions to 12 English words or fewer and prompts to 16 English words or fewer. Use normal conversational punctuation and do not end any segment with a comma, colon, dash, or semicolon.
+
+Before returning, silently verify: all supplied paragraphs are covered in original order; no unsupported fact or viewpoint has been added; every long sentence has been rewritten into subtitle-safe spoken units; both hosts have substantive opportunities; the word balance is near 50/50 when the script is long enough; no segment exceeds its supplied budget; and the result sounds like a composed two-host conversation."""
 RETRY_INSTRUCTIONS = (
     "Rewrite only these zh-CN source paragraphs. Preserve facts, numbers, attribution and order. "
     "Write natural spoken Chinese: use common Chinese names first, keep a bare English proper name only when it is natural, "
@@ -127,7 +184,7 @@ def base_source(text: str) -> str:
 
 
 def english_spoken_source(text: str) -> str:
-    """Make verified English easier to say without changing its lexical content."""
+    """Normalise verified English for compact source-linked request payloads."""
     text = base_source(text)
     text = re.sub(r"\b(?:ie|i\.e)\s*,", "i.e.,", text, flags=re.IGNORECASE)
     text = text.replace("—", ", ")
@@ -192,6 +249,9 @@ def source_tokens_with_delivery_fillers_removed(source: list[str], candidate: li
 def sentence_boundaries(text: str) -> list[int]:
     boundaries: list[int] = []
     for match in re.finditer(r"[.!?;]", text):
+        if match.group(0) == "." and match.start() > 0 and match.start() + 1 < len(text):
+            if text[match.start() - 1].isdigit() and text[match.start() + 1].isdigit():
+                continue
         token = text[max(0, match.start() - 12): match.end()]
         if any(token.endswith(abbrev) for abbrev in ABBREVIATIONS):
             continue
@@ -200,22 +260,33 @@ def sentence_boundaries(text: str) -> list[int]:
 
 
 def split_for_speech(text: str, maximum: int) -> list[str]:
-    if len(text) <= maximum:
-        return [text]
     result: list[str] = []
-    remaining = text.strip()
-    while len(remaining) > maximum:
-        candidates = [position for position in sentence_boundaries(remaining) if position <= maximum]
-        if not candidates:
-            candidates = [match.end() for match in re.finditer(r",", remaining) if match.end() <= maximum]
-        cut = candidates[-1] if candidates else maximum
-        if cut == maximum:
-            space = remaining.rfind(" ", 0, maximum)
-            cut = space if space > maximum // 2 else maximum
-        result.append(remaining[:cut].strip())
-        remaining = remaining[cut:].strip()
-    if remaining:
-        result.append(remaining)
+    sentence_start = 0
+    sentence_ends = sentence_boundaries(text)
+    if not sentence_ends or sentence_ends[-1] != len(text):
+        sentence_ends.append(len(text))
+    for sentence_end in sentence_ends:
+        remaining = text[sentence_start:sentence_end].strip()
+        sentence_start = sentence_end
+        while len(remaining) > maximum:
+            candidates = [match.end() for match in re.finditer(r"[,;:]", remaining) if maximum // 3 <= match.end() <= maximum]
+            cut = candidates[-1] if candidates else remaining.rfind(" ", 0, maximum)
+            if cut <= 0 or not candidates:
+                raise ValueError(
+                    "Cannot split an overlong English sentence into a complete spoken unit; "
+                    "rewrite the sentence before applying the segment budget."
+                )
+            unit = remaining[:cut].strip()
+            unit = unit.rstrip(",;:").rstrip()
+            if not unit or unit[-1] not in ".!?":
+                raise ValueError(
+                    "Cannot split an overlong English sentence without creating a dangling clause; "
+                    "rewrite the sentence before applying the segment budget."
+                )
+            result.append(unit)
+            remaining = remaining[cut:].strip()
+        if remaining:
+            result.append(remaining)
     return result
 
 
@@ -228,13 +299,39 @@ def speaker_for_paragraph(order: int, total: int) -> str:
     return "secondary" if (order - 1) % 3 == 2 else "primary"
 
 
+def partner_for_speaker(speaker_id: str) -> str:
+    return "secondary" if speaker_id == "primary" else "primary"
+
+
+def word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z]+(?:[’'][A-Za-z]+)?", text))
+
+
+def validate_interaction(segment: dict[str, Any]) -> None:
+    """Keep non-factual host turns bounded and unable to bypass source coverage."""
+    kind = segment["kind"]
+    text = segment["spoken_text"].strip()
+    if text.endswith((",", ":", ";", "—", "–", "-")):
+        raise ValueError("English interactions must not end with dangling punctuation.")
+    if not text.endswith((".", "!", "?")):
+        raise ValueError("English interactions must be complete spoken sentences.")
+    if kind == "reaction":
+        if word_count(text) > MAX_REACTION_WORDS:
+            raise ValueError(f"English reactions must contain no more than {MAX_REACTION_WORDS} words.")
+    elif kind == "prompt":
+        if word_count(text) > MAX_PROMPT_WORDS:
+            raise ValueError(f"English prompts must contain no more than {MAX_PROMPT_WORDS} words.")
+        if not text.endswith("?"):
+            raise ValueError("English prompts must end with a question mark.")
+
+
 def build_english(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     ordinal = 1
     total = len(paragraphs)
     for paragraph in paragraphs:
         source_id = paragraph_id(paragraph)
-        parts = split_for_speech(english_spoken_source(paragraph["text"]), MAX_ENGLISH_SEGMENT_CHARS)
+        parts = split_for_speech(english_spoken_source(paragraph["text"]), MAX_CAPTION_UNIT_CHARS)
         speaker_id = speaker_for_paragraph(int(paragraph["order"]), total)
         for part in parts:
             segments.append({
@@ -254,10 +351,22 @@ def english_request(article: dict[str, Any], paragraphs: list[dict[str, Any]]) -
         "source_sha256": article["source_sha256"],
         "language": "en",
         "instructions": ENGLISH_STYLE_INSTRUCTIONS,
+        "speaker_balance": {
+            "target_word_share": {speaker: TARGET_ENGLISH_WORD_SHARE for speaker in sorted(SPEAKERS)},
+            "acceptable_word_share": {
+                "minimum": MIN_ENGLISH_WORD_SHARE,
+                "maximum": MAX_ENGLISH_WORD_SHARE,
+            },
+            "max_consecutive_segments": MAX_CONSECUTIVE_ENGLISH_SEGMENTS,
+            "interaction_policy": "Both hosts should have substantive factual turns and useful question/response opportunities.",
+        },
         "paragraphs": [
             {
                 "source_paragraph_id": paragraph_id(item),
-                "speaker_id": speaker_for_paragraph(int(item["order"]), len(paragraphs)),
+                "source_speaker_id": speaker_for_paragraph(int(item["order"]), len(paragraphs)),
+                "partner_speaker_id": partner_for_speaker(speaker_for_paragraph(int(item["order"]), len(paragraphs))),
+                "max_spoken_segment_chars": MAX_ENGLISH_SEGMENT_CHARS,
+                "max_caption_unit_chars": MAX_CAPTION_UNIT_CHARS,
                 "source_text": english_spoken_source(item["text"]),
             }
             for item in paragraphs
@@ -292,18 +401,27 @@ def validate_english_candidate_body(
     missing = [source_id for source_id in known if not grouped[source_id]]
     if missing:
         raise ValueError(f"English candidate is missing source paragraphs: {', '.join(missing)}.")
-    total = len(paragraphs)
     for paragraph in paragraphs:
         source_id = paragraph_id(paragraph)
-        speakers = {item["speaker_id"] for item in grouped[source_id]}
-        expected = speaker_for_paragraph(int(paragraph["order"]), total)
-        if speakers != {expected}:
-            raise ValueError(f"Source paragraph {source_id} has the wrong deterministic speaker assignment.")
+        factual = [item for item in grouped[source_id] if item["kind"] in FACTUAL_KINDS]
+        interactions = [item for item in grouped[source_id] if item["kind"] in INTERACTION_KINDS]
+        if not factual:
+            raise ValueError(f"English candidate has no factual source coverage for {source_id}.")
+        if len(interactions) > max(1, (len(factual) + 1) // 2):
+            raise ValueError(f"Source paragraph {source_id} has too many interaction segments.")
+        for index, item in enumerate(grouped[source_id]):
+            if item["kind"] in INTERACTION_KINDS:
+                validate_interaction(item)
+            if item["kind"] == "prompt":
+                if index + 1 >= len(grouped[source_id]) or grouped[source_id][index + 1]["kind"] not in FACTUAL_KINDS:
+                    raise ValueError("An English prompt must be immediately followed by a factual source segment.")
+                if grouped[source_id][index + 1]["speaker_id"] == item["speaker_id"]:
+                    raise ValueError("An English prompt must be answered by the other speaker.")
     return grouped
 
 
 def finalize_english(paragraphs: list[dict[str, Any]], candidate: Any) -> list[dict[str, Any]]:
-    """Freeze an oral English draft while retaining paragraph-level source links."""
+    """Freeze an oral English draft while retaining source links and speaker balance."""
     grouped = validate_english_candidate_body(paragraphs, candidate)
     segments: list[dict[str, Any]] = []
     ordinal = 1
@@ -319,7 +437,7 @@ def finalize_english(paragraphs: list[dict[str, Any]], candidate: Any) -> list[d
             })
             ordinal += 1
     validate_structure(segments, "en")
-    validate_coverage(paragraphs, segments)
+    validate_coverage(paragraphs, segments, speaker_policy="english")
     validate_english(paragraphs, segments)
     return segments
 
@@ -335,7 +453,7 @@ def validate_candidate_body(
     for item in candidate:
         if not isinstance(item, dict) or set(item) != ALLOWED_FIELDS:
             raise ValueError("Every Chinese candidate segment must contain exactly the five contract fields.")
-        if item.get("speaker_id") not in SPEAKERS or item.get("kind") not in BODY_KINDS:
+        if item.get("speaker_id") not in SPEAKERS or item.get("kind") not in FACTUAL_KINDS:
             raise ValueError("Chinese candidate must contain source-linked body segments with an approved speaker.")
         if not isinstance(item.get("spoken_text"), str) or not item["spoken_text"].strip():
             raise ValueError("Every Chinese candidate segment needs spoken text.")
@@ -418,7 +536,7 @@ def chinese_punctuation_issues(segments: list[dict[str, Any]]) -> list[dict[str,
 
 VARIANTS = {"en", "en-zh", "zh-CN"}
 SUBTITLE_DRAFT_FIELDS = {"unit_id", "translation_zh"}
-SENTENCE_ENDINGS = ".!?"
+SENTENCE_ENDINGS = ".!?;"
 SENTENCE_ABBREVIATIONS = {
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.", "vs.", "etc.",
     "e.g.", "i.e.", "u.s.", "u.k.", "no.", "fig.", "inc.", "ltd.", "co.",
@@ -466,7 +584,12 @@ def init_production(
         "state": "queued",
         "variant": variant,
         "article": {"path": article_relative, "source_sha256": article["source_sha256"]},
-        "script_generation": {"provider": "codex-skill", "policy_version": "5.0", "zh_punctuation_retry_limit": 1},
+        "script_generation": {
+            "provider": "codex-skill",
+            "policy_version": "5.1",
+            "policy": "source_bounded_conversational_rewrite",
+            "zh_punctuation_retry_limit": 1,
+        },
         "languages": languages,
         "speakers": {"primary": "primary", "secondary": "secondary"},
         "target_duration_minutes": {"minimum": 8, "maximum": 12, "policy": "coverage_first"},
@@ -521,6 +644,8 @@ def is_sentence_end(text: str, position: int) -> bool:
     while tail < len(text) and text[tail] in "\"')]}”’":
         tail += 1
     if text[position] == ".":
+        if position > 0 and position + 1 < len(text) and text[position - 1].isdigit() and text[position + 1].isdigit():
+            return False
         token = re.search(r"[A-Za-z.]+$", text[:position + 1])
         if token and token.group(0).lower() in SENTENCE_ABBREVIATIONS and tail < len(text):
             return False
@@ -529,82 +654,52 @@ def is_sentence_end(text: str, position: int) -> bool:
     return tail == len(text) or text[tail].isspace()
 
 
-def sentence_spans(script: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build source-linked, complete English sentence units before translation.
+def caption_unit_spans(script: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return one complete caption unit per frozen spoken segment.
 
-    Script segmentation is an audio concern.  This routine deliberately joins
-    adjacent source-linked segments only to find a sentence boundary, then maps
-    the immutable sentence back to one or more exact segment spans.
+    Audio segments are already proactively split by the writing stage.  Do not
+    join them again: doing so recreates the long caption units that the writing
+    budget intentionally removed.
     """
-    entries: list[dict[str, Any]] = []
-    joined = ""
-    for index, segment in enumerate(script):
-        text = str(segment["spoken_text"])
-        if not text.strip():
-            raise ValueError("Subtitle source text cannot be empty.")
-        if index:
-            joined += " "
-        start = len(joined)
-        joined += text
-        entries.append({"segment": segment, "global_start": start, "global_end": len(joined)})
-
-    boundaries: list[tuple[int, int]] = []
-    cursor = 0
-    for index, character in enumerate(joined):
-        if is_sentence_end(joined, index):
-            end = index + 1
-            while end < len(joined) and joined[end] in "\"')]}”’":
-                end += 1
-            source = joined[cursor:end].strip()
-            if not source:
-                raise ValueError("Sentence subtitle splitting produced an empty unit.")
-            boundaries.append((cursor, end))
-            cursor = end
-            while cursor < len(joined) and joined[cursor].isspace():
-                cursor += 1
-    if joined[cursor:].strip():
-        raise ValueError("Every reviewed bilingual subtitle unit must be a complete English sentence.")
-
     units: list[dict[str, Any]] = []
-    for ordinal, (global_start, global_end) in enumerate(boundaries, start=1):
-        spans: list[dict[str, Any]] = []
-        paragraph_ids: list[str] = []
-        for entry in entries:
-            overlap_start = max(global_start, entry["global_start"])
-            overlap_end = min(global_end, entry["global_end"])
-            if overlap_end <= overlap_start:
-                continue
-            segment = entry["segment"]
-            source_start = overlap_start - entry["global_start"]
-            source_end = overlap_end - entry["global_start"]
-            if not str(segment["spoken_text"])[source_start:source_end].strip():
-                continue
-            spans.append({"segment_id": segment["segment_id"], "source_start": source_start, "source_end": source_end})
-            for paragraph_id in segment["source_paragraph_ids"]:
-                if paragraph_id not in paragraph_ids:
-                    paragraph_ids.append(paragraph_id)
-        source_text = joined[global_start:global_end].strip()
-        if not spans or not source_text:
-            raise ValueError("Sentence subtitle mapping lost its source spans.")
+    for ordinal, segment in enumerate(script, start=1):
+        source_text = str(segment["spoken_text"]).strip()
+        if not source_text:
+            raise ValueError("Subtitle source text cannot be empty.")
+        if len(source_text) > MAX_CAPTION_UNIT_CHARS:
+            raise ValueError("English caption unit exceeds the configured subtitle budget.")
+        if source_text.endswith((",", ":", ";", "—", "–", "-")):
+            raise ValueError("English caption unit cannot end with dangling punctuation.")
+        endings = sentence_boundaries(source_text)
+        if len(endings) != 1 or endings[0] != len(source_text):
+            raise ValueError("Every reviewed bilingual subtitle unit must be a complete English sentence or self-contained clause.")
         units.append({
-            "unit_id": f"en-zh-sentence-{ordinal:03d}", "source_text": source_text,
-            "source_spans": spans, "source_paragraph_ids": paragraph_ids,
+            "unit_id": f"en-zh-unit-{ordinal:03d}",
+            "source_text": source_text,
+            "source_spans": [{
+                "segment_id": segment["segment_id"], "source_start": 0, "source_end": len(source_text),
+            }],
+            "source_paragraph_ids": list(segment["source_paragraph_ids"]),
         })
     return units
+
+
+# Kept as a compatibility alias for callers of the previous helper.
+sentence_spans = caption_unit_spans
 
 
 def subtitle_request(article: dict[str, Any], script: list[dict[str, Any]]) -> dict[str, Any]:
     """Create the compact, source-linked request for reviewed bilingual captions."""
     validate_structure(script, "en")
-    units = sentence_spans(script)
+    units = caption_unit_spans(script)
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "source_sha256": article["source_sha256"],
         "script_sha256": sha256_json(script),
         "language": "zh-Hans",
         "instructions": (
-            "Return exactly {units:[{unit_id,translation_zh}]}. Each supplied source unit is one complete English sentence and must remain one complete Chinese translation; do not split, merge, omit or add content. "
-            "Keep every fact, number, attribution, condition and judgment. Do not add line breaks. Use Chinese names where established; do not insert an English clause into Chinese."
+            "Return exactly {units:[{unit_id,translation_zh}]}. Translate each supplied final English spoken unit into one complete, natural Chinese subtitle unit. Do not restore article wording that the English rewrite condensed, and do not add unsupported content. "
+            "Keep the translation within the supplied 48-character layout budget, do not add line breaks, and use Chinese names where established. Do not insert an English clause into Chinese."
         ),
         "units": units,
     }
@@ -616,7 +711,7 @@ def validate_subtitle_draft(article: dict[str, Any], script: list[dict[str, Any]
         raise ValueError("Subtitle draft must contain exactly a units array.")
     requested = request["units"]
     if len(draft["units"]) != len(requested):
-        raise ValueError("Subtitle draft must translate every complete English sentence exactly once.")
+        raise ValueError("Subtitle draft must translate every English caption unit exactly once.")
     final_units: list[dict[str, Any]] = []
     for expected, candidate in zip(requested, draft["units"]):
         if not isinstance(candidate, dict) or set(candidate) != SUBTITLE_DRAFT_FIELDS:
@@ -628,18 +723,67 @@ def validate_subtitle_draft(article: dict[str, Any], script: list[dict[str, Any]
             raise ValueError("Subtitle translations must be non-empty single-paragraph Chinese text.")
         if not re.search(r"[。！？]$", translation):
             raise ValueError("Every reviewed bilingual subtitle unit must be a complete Chinese sentence.")
+        if len(translation) > MAX_CHINESE_CAPTION_CHARS:
+            raise ValueError("Chinese subtitle unit exceeds the configured layout budget.")
         if re.search(r"[A-Za-z]{4,}\s+[A-Za-z]{4,}", translation):
             raise ValueError("A Chinese subtitle contains an English clause rather than an indivisible proper name.")
         final_units.append({**expected, "translation_zh": translation})
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "translation_mode": "reviewed_source_linked",
         "translation_quality": "reviewed",
-        "caption_unit_policy": "full_sentence",
+        "caption_unit_policy": "captionable_clause",
         "source_sha256": article["source_sha256"],
         "script_sha256": sha256_json(script),
         "units": final_units,
     }
+
+
+def preflight_subtitle_layout(article_path: Path, result: dict[str, Any], production_path: Path) -> None:
+    """Use the renderer's real fonts and safe areas before spending Azure TTS quota."""
+    production = read_json(production_path)
+    ratios = production.get("output", {}).get("aspect_ratios") or ["16:9"]
+    if not isinstance(ratios, list) or any(ratio not in {"16:9", "9:16"} for ratio in ratios):
+        raise ValueError("Production output needs supported aspect ratios for caption layout preflight.")
+    article = read_json(article_path)
+    cover_file = article.get("issue_cover", {}).get("file")
+    if not isinstance(cover_file, str) or not cover_file:
+        raise ValueError("Article package needs an issue cover for caption layout preflight.")
+    cover_path = article_path.parent / cover_file
+    if not cover_path.is_file():
+        raise ValueError("Caption layout preflight could not find the verified issue cover.")
+
+    visual_path = SCRIPT_DIR.parent.parent / "economist-static-slide-video" / "scripts" / "preview_visual_system.py"
+    spec = importlib.util.spec_from_file_location("economist_caption_layout_preflight", visual_path)
+    if spec is None or spec.loader is None:
+        raise ValueError("Caption layout preflight could not load the static-video renderer.")
+    visual = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(visual)
+    definition = visual.read_definition(visual.DEFAULT_DEFINITION)
+    failures: list[dict[str, str]] = []
+    dimensions = {
+        "16:9": (1080, 1920, "landscape_opening"),
+        "9:16": (1920, 1080, "portrait_opening"),
+    }
+    for unit in result["units"]:
+        for ratio in ratios:
+            height, width, template = dimensions[ratio]
+            content = copy.deepcopy(visual.SAMPLE_CONTENT)
+            content["caption"]["current"] = {"en": unit["source_text"], "zh": unit["translation_zh"]}
+            try:
+                visual.render_template(
+                    definition, template, cover_path, content, height, width,
+                    diagnostics=[],
+                )
+            except RuntimeError as error:
+                failures.append({
+                    "unit_id": unit["unit_id"], "aspect_ratio": ratio, "reason": str(error),
+                })
+    if failures:
+        raise ValueError(
+            "Caption layout preflight failed; rewrite only these caption units: "
+            + json.dumps(failures, ensure_ascii=False)
+        )
 
 
 def finalize_subtitles(article_path: Path, script_path: Path, draft_path: Path, output_path: Path, production_path: Path | None = None) -> dict[str, Any]:
@@ -647,6 +791,8 @@ def finalize_subtitles(article_path: Path, script_path: Path, draft_path: Path, 
     script = read_json(script_path)
     validate_structure(script, "en")
     result = validate_subtitle_draft(article, script, read_json(draft_path))
+    if production_path is not None:
+        preflight_subtitle_layout(article_path, result, production_path)
     write_json(output_path, result)
     if production_path is not None:
         production = read_json(production_path)
@@ -729,17 +875,22 @@ def validate_structure(segments: Any, language: str) -> None:
             raise ValueError("Chinese body segments must use sentence_split.")
 
 
-def validate_coverage(paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
+def validate_coverage(
+    paragraphs: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+    speaker_policy: str = "legacy",
+) -> None:
     known = [paragraph_id(item) for item in paragraphs]
     index = {value: position for position, value in enumerate(known)}
     flattened: list[str] = []
     completed: list[str] = []
-    speakers: set[str] = set()
+    factual_speakers: set[str] = set()
     for segment in segments:
         ids = segment["source_paragraph_ids"]
         if len(ids) != 1 or ids[0] not in index:
             raise ValueError("Each body segment must reference one known source paragraph.")
-        speakers.add(segment["speaker_id"])
+        if segment["kind"] in FACTUAL_KINDS:
+            factual_speakers.add(segment["speaker_id"])
         flattened.append(ids[0])
         if not completed or completed[-1] != ids[0]:
             completed.append(ids[0])
@@ -747,38 +898,123 @@ def validate_coverage(paragraphs: list[dict[str, Any]], segments: list[dict[str,
         raise ValueError("Every source paragraph must be covered once, in source order.")
     if any(index[flattened[position]] > index[flattened[position + 1]] for position in range(len(flattened) - 1)):
         raise ValueError("Body segments are out of source order.")
-    if len(known) >= 2 and speakers != {"primary", "secondary"}:
+    if len(known) >= 2 and factual_speakers != {"primary", "secondary"}:
         raise ValueError("Articles with at least two paragraphs must use both speakers.")
+
+    if speaker_policy == "english":
+        factual_segments = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
+        if len(factual_segments) >= 2 and factual_speakers != SPEAKERS:
+            raise ValueError("English scripts with at least two factual segments must give both hosts substantive turns.")
+        for position, segment in enumerate(segments):
+            if segment["kind"] != "prompt":
+                continue
+            if position + 1 >= len(segments) or segments[position + 1]["kind"] not in FACTUAL_KINDS:
+                raise ValueError("An English prompt must be immediately followed by a factual source segment.")
+            if segments[position + 1]["speaker_id"] == segment["speaker_id"]:
+                raise ValueError("An English prompt must be answered by the other speaker.")
+        return
 
     by_source: dict[str, set[str]] = {source_id: set() for source_id in known}
     for segment in segments:
-        by_source[segment["source_paragraph_ids"][0]].add(segment["speaker_id"])
-    for source_id, source_speakers in by_source.items():
-        if len(source_speakers) != 1:
-            raise ValueError("All segments from one source paragraph must use the same speaker.")
+        if segment["kind"] in FACTUAL_KINDS:
+            by_source[segment["source_paragraph_ids"][0]].add(segment["speaker_id"])
+    for order, source_id in enumerate(known, start=1):
+        if by_source[source_id] != {speaker_for_paragraph(order, len(known))}:
+            raise ValueError("Factual segments must keep the deterministic source speaker assignment.")
+    for segment in segments:
+        if segment["kind"] in INTERACTION_KINDS:
+            source_id = segment["source_paragraph_ids"][0]
+            order = index[source_id] + 1
+            if segment["speaker_id"] != partner_for_speaker(speaker_for_paragraph(order, len(known))):
+                raise ValueError("Interaction segments must use the deterministic partner speaker.")
+
+
+def english_speaker_balance(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    word_counts = {
+        speaker: sum(word_count(segment["spoken_text"]) for segment in segments if segment["speaker_id"] == speaker)
+        for speaker in sorted(SPEAKERS)
+    }
+    total_words = sum(word_counts.values())
+    shares = {
+        speaker: round((count / total_words) if total_words else 0.0, 4)
+        for speaker, count in word_counts.items()
+    }
+    dominant = max(word_counts, key=word_counts.get) if total_words else None
+    repairable_segment_ids = [
+        segment["segment_id"]
+        for segment in segments
+        if dominant and segment["speaker_id"] == dominant and segment["kind"] in FACTUAL_KINDS
+    ]
+    return {
+        "word_counts": word_counts,
+        "total_words": total_words,
+        "word_shares": shares,
+        "target_word_share": TARGET_ENGLISH_WORD_SHARE,
+        "acceptable_word_share": {
+            "minimum": MIN_ENGLISH_WORD_SHARE,
+            "maximum": MAX_ENGLISH_WORD_SHARE,
+        },
+        "repairable_segment_ids": repairable_segment_ids,
+    }
+
+
+def validate_english_speaker_balance(segments: list[dict[str, Any]]) -> None:
+    report = english_speaker_balance(segments)
+    if report["total_words"] < MIN_BALANCED_ENGLISH_WORDS:
+        return
+    shares = report["word_shares"]
+    if any(share < MIN_ENGLISH_WORD_SHARE or share > MAX_ENGLISH_WORD_SHARE for share in shares.values()):
+        raise ValueError("English speaker balance failed: " + json.dumps(report, ensure_ascii=False))
+
+
+def validate_english_turn_balance(segments: list[dict[str, Any]]) -> None:
+    run: list[dict[str, Any]] = []
+    for segment in segments:
+        speaker = segment["speaker_id"]
+        if run and run[-1]["speaker_id"] != speaker:
+            run = [segment]
+        else:
+            run.append(segment)
+        if len(run) > MAX_CONSECUTIVE_ENGLISH_SEGMENTS:
+            raise ValueError(
+                f"English script has more than {MAX_CONSECUTIVE_ENGLISH_SEGMENTS} consecutive segments from {speaker}: "
+                + json.dumps([item["segment_id"] for item in run], ensure_ascii=False)
+            )
+    factual_count = sum(segment["kind"] in FACTUAL_KINDS for segment in segments)
+    interactions = [segment for segment in segments if segment["kind"] in INTERACTION_KINDS]
+    if factual_count >= MIN_INTERACTION_FACTUAL_SEGMENTS:
+        if len(interactions) < MIN_INTERACTION_SEGMENTS:
+            raise ValueError(
+                f"English script needs at least {MIN_INTERACTION_SEGMENTS} useful interactions for a long two-host exchange."
+            )
+        if {segment["speaker_id"] for segment in interactions} != SPEAKERS:
+            raise ValueError("English script must give both hosts an interaction opportunity.")
 
 
 def validate_english(paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
-    actual: dict[str, list[str]] = {}
     for segment in segments:
         if SPOKEN_BRACKETS.search(segment["spoken_text"]):
             raise ValueError("English script must not retain parenthetical or bracketed text.")
         if len(segment["spoken_text"].strip()) > MAX_ENGLISH_SEGMENT_CHARS:
             raise ValueError("English script contains an overlong segment; split it into shorter spoken clauses.")
-        actual.setdefault(segment["source_paragraph_ids"][0], []).extend(lexical_tokens(segment["spoken_text"]))
-    for paragraph in paragraphs:
-        source_id = paragraph_id(paragraph)
-        expected = lexical_tokens(english_spoken_source(paragraph["text"]))
-        covered = source_tokens_with_delivery_fillers_removed(expected, actual.get(source_id, []))
-        if covered != expected:
-            raise ValueError(f"English script changes lexical source content for {source_id}.")
+        if len(segment["spoken_text"].strip()) > MAX_CAPTION_UNIT_CHARS:
+            raise ValueError("English script contains an overlong caption unit; split it before synthesis.")
+        if segment["spoken_text"].strip().endswith((",", ":", ";", "—", "–", "-")):
+            raise ValueError("English script contains a segment with dangling terminal punctuation.")
+        endings = sentence_boundaries(segment["spoken_text"].strip())
+        if len(endings) != 1 or endings[0] != len(segment["spoken_text"].strip()):
+            raise ValueError("English script segments must be complete captionable sentences or self-contained clauses.")
+        if segment["kind"] in INTERACTION_KINDS:
+            validate_interaction(segment)
+    validate_english_speaker_balance(segments)
+    validate_english_turn_balance(segments)
 
 
 def validate_script(article_path: Path, script_path: Path, language: str) -> dict[str, Any]:
     _, paragraphs = load_article(article_path)
     segments = read_json(script_path)
     validate_structure(segments, language)
-    validate_coverage(paragraphs, segments)
+    validate_coverage(paragraphs, segments, speaker_policy="english" if language == "en" else "legacy")
     if language == "en":
         validate_english(paragraphs, segments)
     else:

@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "skills" / "economist-source-to-podcast-script" / "scripts" / "source_to_podcast_script.py"
@@ -135,17 +136,24 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "limit"):
             MODULE.retry_request(self.article, self.paragraphs, bad, attempt=2)
 
-    def test_english_rejects_paraphrase(self):
+    def test_english_allows_source_bounded_paraphrase(self):
         segments = MODULE.build_english(self.paragraphs)
         segments[0]["spoken_text"] = "A different fact."
-        with self.assertRaisesRegex(ValueError, "lexical"):
-            MODULE.validate_english(self.paragraphs, segments)
+        MODULE.validate_english(self.paragraphs, segments)
 
     def test_english_request_carries_conversational_style_without_full_source_duplication(self):
         request = MODULE.english_request(self.article, self.paragraphs)
-        self.assertIn("short, direct clauses", request["instructions"])
+        self.assertIn("short turns", request["instructions"])
         self.assertIn("well, so, right", request["instructions"])
-        self.assertEqual(set(request["paragraphs"][0]), {"source_paragraph_id", "speaker_id", "source_text"})
+        self.assertIn("source-bounded", request["instructions"])
+        self.assertNotIn("SOURCE FIDELITY IS THE NON-NEGOTIABLE RULE", request["instructions"])
+        self.assertEqual(request["speaker_balance"]["target_word_share"]["primary"], 0.5)
+        self.assertEqual(request["speaker_balance"]["acceptable_word_share"]["minimum"], 0.4)
+        self.assertEqual(set(request["paragraphs"][0]), {
+            "source_paragraph_id", "source_speaker_id", "partner_speaker_id",
+            "max_spoken_segment_chars", "max_caption_unit_chars", "source_text",
+        })
+        self.assertEqual(request["paragraphs"][0]["max_caption_unit_chars"], MODULE.MAX_CAPTION_UNIT_CHARS)
         self.assertNotIn("spoken_text", request["paragraphs"][0])
 
     def test_finalize_english_allows_controlled_fillers_and_contractions(self):
@@ -169,7 +177,7 @@ class SourceToPodcastScriptTests(unittest.TestCase):
                     "segment_id": f"draft-{index}",
                     "speaker_id": MODULE.speaker_for_paragraph(index, len(self.paragraphs)),
                     "kind": "sentence_split",
-                    "spoken_text": f"And, {label}.",
+                    "spoken_text": f"{label.capitalize()}.",
                     "source_paragraph_ids": [f"p{index:03d}"],
                 }
                 for index, label in ((3, "third fact"), (4, "fourth fact"), (5, "fifth fact"))
@@ -180,7 +188,7 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         self.assertEqual(result[0]["spoken_text"], "Well, first fact, IPO, still essential.")
         MODULE.validate_coverage(self.paragraphs, result)
 
-    def test_english_rejects_unapproved_added_claim(self):
+    def test_english_candidate_keeps_source_links_when_rewritten(self):
         candidate = [
             {
                 "segment_id": "draft-1",
@@ -200,8 +208,8 @@ class SourceToPodcastScriptTests(unittest.TestCase):
                 for index, label in ((2, "second fact"), (3, "third fact"), (4, "fourth fact"), (5, "fifth fact"))
             ],
         ]
-        with self.assertRaisesRegex(ValueError, "lexical"):
-            MODULE.finalize_english(self.paragraphs, candidate)
+        result = MODULE.finalize_english(self.paragraphs, candidate)
+        self.assertEqual(len(result), 5)
 
     def test_english_lexical_check_expands_contractions(self):
         paragraphs = [{"order": 1, "text": "The system does not work."}]
@@ -276,6 +284,8 @@ class SourceToPodcastScriptTests(unittest.TestCase):
                 self.assertEqual(production["variant"], variant)
                 self.assertEqual(production["languages"], expected_languages)
                 self.assertEqual(set(production["artifacts"]), expected_artifacts)
+                self.assertEqual(production["script_generation"]["policy_version"], "5.1")
+                self.assertEqual(production["script_generation"]["policy"], "source_bounded_conversational_rewrite")
                 self.assertNotIn("key", json.dumps(production).lower())
             bilingual = json.loads((root / "en-zh.production.json").read_text(encoding="utf-8"))
             self.assertEqual(bilingual["captions"]["provider"], "approved-bilingual-script")
@@ -287,7 +297,7 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         draft = {"units": [{"unit_id": item["unit_id"], "translation_zh": f"第{index}条字幕。"} for index, item in enumerate(request["units"], start=1)]}
         result = MODULE.validate_subtitle_draft(self.article, script, draft)
         self.assertEqual(result["translation_quality"], "reviewed")
-        self.assertEqual(result["caption_unit_policy"], "full_sentence")
+        self.assertEqual(result["caption_unit_policy"], "captionable_clause")
         self.assertTrue(result["units"][0]["source_text"].endswith("."))
         self.assertTrue(result["units"][0]["source_spans"])
 
@@ -301,16 +311,114 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source order"):
             MODULE.validate_subtitle_draft(self.article, script, draft)
 
-    def test_sentence_units_can_cross_audio_segments_without_splitting_the_sentence(self):
+    def test_caption_units_do_not_rejoin_audio_segments(self):
         script = [
-            {"segment_id": "en-001", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "A complete sentence begins", "source_paragraph_ids": ["p001"]},
-            {"segment_id": "en-002", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "and ends here. Another sentence follows.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "en-001", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "A complete caption unit ends here.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "en-002", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "Another caption unit follows.", "source_paragraph_ids": ["p001"]},
         ]
         request = MODULE.subtitle_request(self.article, script)
-        self.assertEqual([item["source_text"] for item in request["units"]], ["A complete sentence begins and ends here.", "Another sentence follows."])
-        self.assertEqual([item["segment_id"] for item in request["units"][0]["source_spans"]], ["en-001", "en-002"])
+        self.assertEqual([item["source_text"] for item in request["units"]], ["A complete caption unit ends here.", "Another caption unit follows."])
+        self.assertEqual([item["segment_id"] for item in request["units"][0]["source_spans"]], ["en-001"])
 
-    def test_sentence_units_do_not_split_inside_an_english_abbreviation(self):
+    def test_caption_units_reject_a_long_or_multi_sentence_audio_segment(self):
         script = [{"segment_id": "en-001", "speaker_id": "primary", "kind": "verbatim", "spoken_text": "The U.S. market changed. It then recovered.", "source_paragraph_ids": ["p001"]}]
-        request = MODULE.subtitle_request(self.article, script)
-        self.assertEqual([item["source_text"] for item in request["units"]], ["The U.S. market changed.", "It then recovered."])
+        with self.assertRaisesRegex(ValueError, "complete English"):
+            MODULE.subtitle_request(self.article, script)
+        script[0]["spoken_text"] = "This single captionable clause is deliberately made far too long to fit within the maximum display unit character budget cleanly."
+        with self.assertRaisesRegex(ValueError, "subtitle budget"):
+            MODULE.subtitle_request(self.article, script)
+
+    def test_english_interaction_uses_partner_and_does_not_bypass_facts(self):
+        paragraphs = [{"order": 1, "text": "The market changed. It then recovered."}]
+        candidate = [
+            {"segment_id": "draft-1", "speaker_id": "secondary", "kind": "prompt", "spoken_text": "What does that mean?", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-2", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "The market changed.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-3", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "It then recovered.", "source_paragraph_ids": ["p001"]},
+        ]
+        result = MODULE.finalize_english(paragraphs, candidate)
+        self.assertEqual(result[0]["speaker_id"], "secondary")
+        self.assertEqual(result[0]["kind"], "prompt")
+        self.assertEqual(result[1]["speaker_id"], "primary")
+
+    def test_english_interaction_allows_natural_response_and_rejects_same_speaker_answer(self):
+        paragraphs = [{"order": 1, "text": "A source fact. Another source fact."}]
+        candidate = [
+            {"segment_id": "draft-1", "speaker_id": "secondary", "kind": "reaction", "spoken_text": "That is a serious concern.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-2", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "A source fact.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-3", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "Another source fact.", "source_paragraph_ids": ["p001"]},
+        ]
+        result = MODULE.finalize_english(paragraphs, candidate)
+        self.assertEqual(result[0]["spoken_text"], "That is a serious concern.")
+        candidate[0] = {"segment_id": "draft-1", "speaker_id": "secondary", "kind": "prompt", "spoken_text": "What does that mean?", "source_paragraph_ids": ["p001"]}
+        candidate[1]["speaker_id"] = "secondary"
+        with self.assertRaisesRegex(ValueError, "other speaker"):
+            MODULE.finalize_english(paragraphs, candidate)
+
+    def test_english_rejects_dangling_terminal_punctuation(self):
+        paragraphs = [{"order": 1, "text": "A source fact."}]
+        candidate = [{
+            "segment_id": "draft-1", "speaker_id": "primary", "kind": "sentence_split",
+            "spoken_text": "A source fact;", "source_paragraph_ids": ["p001"],
+        }]
+        with self.assertRaisesRegex(ValueError, "dangling"):
+            MODULE.finalize_english(paragraphs, candidate)
+
+    def test_english_allows_two_speakers_inside_one_source_paragraph(self):
+        paragraphs = [
+            {"order": 1, "text": "First source fact."},
+            {"order": 2, "text": "Second source fact."},
+        ]
+        candidate = [
+            {"segment_id": "draft-1", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "First source fact.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-2", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "That point matters.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "draft-3", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "Second source fact.", "source_paragraph_ids": ["p002"]},
+        ]
+        result = MODULE.finalize_english(paragraphs, candidate)
+        self.assertEqual([item["speaker_id"] for item in result], ["primary", "secondary", "secondary"])
+
+    def test_english_balance_reports_word_counts_and_repairable_segments(self):
+        paragraphs = [{"order": 1, "text": "First source fact."}, {"order": 2, "text": "Second source fact."}]
+        long_text = "The report describes a major change in the market and its effects today."
+        short_text = "A brief point."
+        candidate = [
+            {"segment_id": "reaction-1", "speaker_id": "secondary", "kind": "reaction", "spoken_text": "That changes the picture.", "source_paragraph_ids": ["p001"]},
+            {"segment_id": "reaction-2", "speaker_id": "primary", "kind": "reaction", "spoken_text": "It is an important shift.", "source_paragraph_ids": ["p001"]},
+        ]
+        for index in range(12):
+            candidate.append({
+                "segment_id": f"draft-{index}", "speaker_id": "primary" if index % 4 else "secondary",
+                "kind": "sentence_split", "spoken_text": long_text if index % 4 else short_text,
+                "source_paragraph_ids": ["p001"],
+            })
+        candidate.append({
+            "segment_id": "draft-last", "speaker_id": "secondary", "kind": "sentence_split",
+            "spoken_text": "Second source fact.", "source_paragraph_ids": ["p002"],
+        })
+        with self.assertRaisesRegex(ValueError, "speaker balance failed"):
+            MODULE.finalize_english(paragraphs, candidate)
+
+    def test_split_for_speech_refuses_to_create_a_semicolon_fragment(self):
+        with self.assertRaisesRegex(ValueError, "dangling clause"):
+            MODULE.split_for_speech(
+                "This is a long sentence, with many words that cannot be split naturally without rewriting.",
+                40,
+            )
+
+    def test_subtitle_layout_preflight_blocks_output_before_tts_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            script_path = root / "script.en.json"
+            draft_path = root / "draft.json"
+            output_path = root / "subtitle-script.en-zh.json"
+            production_path = root / "production.json"
+            article = {"review_status": "verified", "source_sha256": "source-hash", "paragraphs": [{"order": 1, "text": "A source fact."}]}
+            script = [{"segment_id": "en-001", "speaker_id": "primary", "kind": "verbatim", "spoken_text": "A source fact.", "source_paragraph_ids": ["p001"]}]
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+            script_path.write_text(json.dumps(script), encoding="utf-8")
+            draft_path.write_text(json.dumps({"units": [{"unit_id": "en-zh-unit-001", "translation_zh": "一条字幕。"}]}), encoding="utf-8")
+            production_path.write_text(json.dumps({"output": {"aspect_ratios": ["16:9"]}}), encoding="utf-8")
+            with mock.patch.object(MODULE, "preflight_subtitle_layout", side_effect=ValueError("Caption layout preflight failed; rewrite only these caption units")):
+                with self.assertRaisesRegex(ValueError, "layout preflight"):
+                    MODULE.finalize_subtitles(article_path, script_path, draft_path, output_path, production_path)
+            self.assertFalse(output_path.exists())

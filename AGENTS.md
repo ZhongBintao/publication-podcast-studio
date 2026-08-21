@@ -81,6 +81,20 @@ User-selected variants -> verified source package -> dual-host selected scripts
 -> static-slide video
 ```
 
+## Repository Plugin
+
+The repository root is the `economist-podcast-studio` plugin root. Its
+`.codex-plugin/plugin.json` manifest exposes the existing `skills/` directory,
+including the four workflow skills and their scripts, templates, tests and
+packaged background-music assets. Keep the existing skill names and paths
+stable so their direct invocations remain compatible.
+
+This plugin is repository-local for now. It has no personal or repository
+marketplace entry, MCP server, app manifest or hook configuration. It packages
+the four skills as independently callable stages; the future
+`economist-podcast-studio-workflow` orchestrator remains separate and is not
+part of this plugin version.
+
 ## First Workflow Skill
 
 Use `skills/economist-article-subtract/` as the completed first workflow step.
@@ -125,13 +139,10 @@ description, collect all required information in one request, echo the frozen
 request for confirmation, and then run automatically without intermediate
 approval steps.
 
-This top-level entrypoint is not implemented yet. Until it exists, production
-invokes the completed skills individually in the order described below. The
-current local tree may contain newer uncommitted Azure-media and static-slide
-implementation files; treat Git history and `git status` separately when
-checking whether those stages have been versioned.
-
-The request may select one or more values in each output dimension:
+This top-level entrypoint is not implemented in plugin version `0.1.0`. Until
+it exists, production invokes the completed skills individually in the order
+described above. The request may select one or more values in each output
+dimension:
 
 ```json
 {
@@ -177,8 +188,9 @@ Audience defaults remain:
 - Chinese is for Chinese mainland general-knowledge adult listeners.
 - English is for global English-speaking or proficient adult listeners.
 - Use one primary host and one secondary host. Both may speak source-linked body
-  paragraphs according to the deterministic paragraph-level speaker plan. Do
-  not add questions, responses, commentary, conclusions or non-factual hand-offs.
+  segments. English uses segment-level speaker assignment so both hosts can
+  share a source paragraph and exchange questions and responses. Do not add
+  unsupported facts, viewpoints, conclusions or non-factual hand-offs.
 - Target 8--12 minutes per language unless the user freezes another duration
   in the production request.
 
@@ -190,21 +202,24 @@ two-host dialogue workflow. The verified article already supplies the content.
 Use the lightweight source-to-podcast-script skill after article verification.
 It generates only the script required by the selected variant:
 
-- English preserves article paragraph order, facts, numbers, attribution and
-  judgments. It uses only `verbatim` and `sentence_split` segments. Final
-  English `spoken_text` must not retain parentheses or square brackets:
-  convert their content into natural spoken pauses without changing factual
-  meaning. The production writing path uses `english-request` followed by
-  `finalize-english`; the legacy deterministic `english` command remains a
-  source-preserving fallback for fixtures and recovery.
+- English is source-bounded rather than word-for-word source-preserving. The
+  writing stage may paraphrase, condense, reorder related clauses, and recast
+  formal prose into short spoken English, but may not invent facts, viewpoints,
+  causal links, examples, predictions or conclusions. It uses `verbatim`,
+  `sentence_split`, `reaction` and `prompt` segments. Final English
+  `spoken_text` must not retain parentheses or square brackets and must not end
+  with dangling commas, colons, dashes or semicolons. The production writing
+  path uses `english-request` followed by `finalize-english`; the legacy
+  deterministic `english` command remains a source-preserving fallback for
+  fixtures and recovery.
 - English delivery should sound like prepared hosts talking through a reported
   story rather than an article being read aloud. Prefer short, direct clauses,
-  contractions and relaxed connectors. A small approved set of non-factual
-  markers may be used sparingly: `well`, `so`, `right`, `you know`, `I mean`,
-  `actually`, `honestly`, `exactly`, `okay`, `look`, `sure`, `of course` and
-  `basically`. These markers create conversational rhythm only; they must not
-  introduce questions, responses, commentary, hand-offs, claims or dialogue
-  turns. Keep each source paragraph with its deterministic speaker.
+  contractions, relaxed connectors and natural questions and answers. Avoid
+  written noun-plus-comma explanations; integrate context into complete spoken
+  clauses. Aim for 45--55% of English words per host, with a 40--60% accepted
+  range for normal-length scripts, and avoid more than three consecutive
+  segments by one host. Keep each English segment source-linked, while allowing
+  both hosts to speak within one source paragraph.
 - Chinese is a paragraph-by-paragraph faithful spoken translation. It may
   split or merge sentences and reorder clauses within the same paragraph to
   sound natural in Chinese. Preserve every fact, number, attribution,
@@ -217,25 +232,29 @@ It generates only the script required by the selected variant:
   comma-wrapped names and currency conversions.
 - Each script segment stores only `segment_id`, `speaker_id`, `kind`,
   `spoken_text` and `source_paragraph_ids`. Both speakers may deliver
-  source-linked body text. Scripts contain no interaction or transition
-  segments, and all segments from one source paragraph use the same speaker.
-  For articles with at least two paragraphs, the deterministic plan uses both
-  speakers at roughly a two-to-one paragraph ratio; a one-paragraph article is
-  not padded just to force a second voice.
+  source-linked body text. English scripts may contain source-linked
+  `reaction` and `prompt` segments, and a source paragraph may use both
+  speakers. Chinese scripts retain paragraph-level speaker assignment and do
+  not use interaction segments. For short English articles, both hosts are
+  used when there are at least two substantive units; longer scripts target a
+  balanced word share and both hosts receive interaction opportunities.
   Do not duplicate the full English article in scripts, briefs or prompts.
 - The script validator checks complete paragraph coverage, legal segment kinds,
-  source references and deterministic speaker assignment automatically. For
-  English it verifies source-token coverage after removing only the approved
-  delivery markers, rejects brackets, and rejects overlong unsplit segments.
-  For Chinese it rejects brackets, repeated punctuation, and comma-wrapped
-  aliases or money conversions. On a Chinese punctuation failure, retry only
-  the affected source paragraphs once; a second failure blocks that language.
+  source references and English speaker balance automatically. For English it
+  verifies complete spoken punctuation, prompt/answer alternation, turn-length
+  limits, brackets and overlong unsplit segments; it does not require lexical
+  source-token equality. If balance fails, it reports word counts, shares and
+  factual segment IDs for one targeted speaker-rebalancing retry. For Chinese
+  it retains paragraph-level speaker checks and rejects brackets, repeated
+  punctuation, and comma-wrapped aliases or money conversions. On a Chinese
+  punctuation failure, retry only the affected source paragraphs once; a
+  second failure blocks that language.
   It does not ask for an intermediate human review.
 
-For `en-zh`, the writing stage supplies a reviewed, source-linked schema-2.0
+For `en-zh`, the writing stage supplies a reviewed, source-linked schema-3.0
 sentence subtitle script. Azure Speech Translation phrase output is legacy
 `machine_unreviewed` compatibility data only; it cannot establish sentence
-pairs and cannot satisfy policy 5.0 publication or rendering requirements.
+pairs and cannot satisfy policy 5.1 publication or rendering requirements.
 
 ### Audio and Subtitle Route
 
@@ -357,8 +376,9 @@ relative artifact paths, hashes, frozen user choices, provider/model/voice
 identifiers, region and SDK/alignment method metadata, resumable segment progress
 and non-sensitive failure reasons. For v1, record the provider as
 `azure-speech`, the alignment method as `azure_word_boundary`, and the script
-generation policy version as `5.0` for the two-host segmented narration
-contract.
+generation policy version as `5.1` for the source-bounded, balanced two-host
+segmented narration contract. Existing `5.0` packages remain compatible and
+are not rewritten.
 It must never contain a key, authorization header, signed URL or full secret
 request log. State is only `queued`, `running`, `complete` or `failed`.
 

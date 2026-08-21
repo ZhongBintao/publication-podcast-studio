@@ -8,6 +8,8 @@ import unittest
 import wave
 from unittest import mock
 
+from PIL import Image
+
 
 ROOT = Path(__file__).parents[1]
 MEDIA_PATH = ROOT / "skills" / "economist-azure-speech-media" / "scripts" / "azure_speech_media.py"
@@ -100,7 +102,9 @@ class AzureSpeechMediaTests(unittest.TestCase):
     def make_package(self, variant):
         temp = tempfile.TemporaryDirectory()
         root = Path(temp.name)
-        article = {"review_status": "verified", "source_sha256": "source-hash", "paragraphs": [{"order": 1, "text": "First source paragraph."}, {"order": 2, "text": "Second source paragraph."}]}
+        cover_path = root / "cover.png"
+        Image.new("RGB", (1920, 1080), "#202020").save(cover_path)
+        article = {"review_status": "verified", "source_sha256": "source-hash", "issue_cover": {"file": "cover.png"}, "paragraphs": [{"order": 1, "text": "First source paragraph."}, {"order": 2, "text": "Second source paragraph."}]}
         article_path = root / "article.json"
         article_path.write_text(json.dumps(article), encoding="utf-8")
         production_path = root / "production.json"

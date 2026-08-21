@@ -45,13 +45,13 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
   writes `audio/en/final.wav`, `alignment.en.json`, `captions.en.srt`, and
   `captions.en.vtt`.
 - `en-zh`: synthesizes the same English script and projects the reviewed,
-  source-linked, complete-sentence `subtitle-script.en-zh.json` onto English
+  source-linked, captionable-unit `subtitle-script.en-zh.json` onto English
   WordBoundary timing.
   It writes `caption-cues.en-zh.json`, `captions.en-zh.srt`, and
   `captions.en-zh.vtt`. Structured cue fields retain separate English and
   Chinese logical text, so video rendering never guesses language identity
-  from SRT line count. Policy 5.0 packages require subtitle-script schema 2.0
-  before synthesis; no machine phrase is promoted to a sentence pair. Existing
+  from SRT line count. New packages require subtitle-script schema 3.0 before
+  synthesis; no machine phrase is promoted to a reviewed caption pair. Existing
   pre-5.0 packages retain the Azure Speech Translation route only as
   `machine_unreviewed` and `review_required` compatibility output, with each
   original phrase kept intact.
@@ -69,9 +69,12 @@ artifacts.
 
 Every successful TTS media run automatically applies the skill's packaged
 three-part background-music bed. No extra user command is required. The
-default mix keeps the original voice content at full level and attenuates the
-background by 18 dB. If a packaged asset is missing or cannot be decoded, the
-media run fails instead of silently producing a video without music.
+default mix keeps the original voice content at full level and uses independent
+background gains of `-14 dB` for opening, `-12 dB` for middle and `-14 dB` for
+ending. If their combination with the voice would clip, peak protection
+attenuates only the background and records the applied gains. If a packaged
+asset is missing or cannot be decoded, the media run fails instead of silently
+producing a video without music.
 
 The default entrypoint is still:
 
@@ -106,12 +109,15 @@ The module writes these timeline-aligned tracks:
   track's absolute clock.
 - `audio/<language>/background-music.wav`: one PCM background track assembled
   from the three supplied files.
-- `audio/<language>/final.wav`: the voice and background tracks mixed at the
-  configured background gain; this is the canonical video audio input.
+- `audio/<language>/final.wav`: the voice and section-gained background tracks
+  mixed with voice-preserving peak protection; this is the canonical video
+  audio input.
 - `audio/<language>/voice-only.wav`: the original concatenated TTS output kept
   for audit and rerun comparison.
 - `background-music.<language>.json`: frame-level placements, loop count,
-  input hashes, output hashes and the selected gain.
+  input hashes, output hashes, requested and applied section gains, and peak
+  protection details. Old packages with one `gain_db` remain supported as a
+  uniform-gain fallback.
 
 The timing contract is exact at the output sample rate: opening music starts at
 frame zero and is cut at six seconds; the middle track starts five seconds
@@ -146,10 +152,10 @@ English WAV and `alignment.en.json` only:
   OUTPUT/production.json --rebuild-captions
 ```
 
-The rebuild rejects missing source coverage, timing overlap, invalid sentence
-spans, an incomplete English sentence, or an English clause embedded in
-Chinese. It never appends terminal punctuation, truncates text, divides a
-reviewed sentence, or assigns synthetic equal-duration cue timings.
+The rebuild rejects missing source coverage, timing overlap, invalid source
+spans, an incomplete English sentence or captionable clause, or an English
+clause embedded in Chinese. It never appends terminal punctuation, truncates
+text, divides a reviewed unit, or assigns synthetic equal-duration cue timings.
 
 ## Voice comparison
 

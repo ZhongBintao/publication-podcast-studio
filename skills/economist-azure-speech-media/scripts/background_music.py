@@ -19,6 +19,7 @@ from typing import Any, NamedTuple
 VOICE_START_SECONDS = 6.0
 MIDDLE_DELAY_AFTER_VOICE_SECONDS = 5.0
 ENDING_LEAD_SECONDS = 3.0
+DEFAULT_SECTION_GAINS_DB = {"opening": -14.0, "middle": -12.0, "ending": -14.0}
 DEFAULT_BACKGROUND_MUSIC_DIR = Path(__file__).resolve().parents[1] / "assets" / "background-music"
 DEFAULT_BACKGROUND_MUSIC_FILES = {
     "opening": DEFAULT_BACKGROUND_MUSIC_DIR / "opening.mp3",
@@ -175,6 +176,20 @@ def _place(buffer: bytearray, format: AudioFormat, start_frame: int, frames: byt
     buffer[start:end] = frames
 
 
+def scale_pcm_16bit(frames: bytes, gain_db: float) -> bytes:
+    """Apply a finite gain to one 16-bit PCM stem without wrapping samples."""
+    try:
+        gain = 10 ** (float(gain_db) / 20.0)
+    except (TypeError, ValueError) as error:
+        raise BackgroundMusicError("Background music gain must be a finite number of decibels.") from error
+    if not math.isfinite(gain) or gain < 0 or len(frames) % 2:
+        raise BackgroundMusicError("Background music gain must be a finite level for 16-bit PCM audio.")
+    scaled = bytearray()
+    for (sample,) in struct.iter_unpack("<h", frames):
+        scaled.extend(struct.pack("<h", max(-32768, min(32767, round(sample * gain)))))
+    return bytes(scaled)
+
+
 def _repeat_to_length(frames: bytes, frame_width: int, frame_count: int) -> bytes:
     if not frames or len(frames) % frame_width:
         raise BackgroundMusicError("The middle background music must contain complete PCM frames.")
@@ -185,8 +200,10 @@ def _repeat_to_length(frames: bytes, frame_width: int, frame_count: int) -> byte
     return (frames * repeats)[: frame_count * frame_width]
 
 
-def mix_audio_tracks(voice: AudioBuffer, background: AudioBuffer, gain_db: float = -18.0) -> AudioBuffer:
-    """Mix aligned tracks while keeping the voice at full level."""
+def mix_audio_tracks(
+    voice: AudioBuffer, background: AudioBuffer, gain_db: float = 0.0, return_report: bool = False,
+) -> AudioBuffer | tuple[AudioBuffer, dict[str, Any]]:
+    """Mix aligned tracks while reducing only background if clipping would occur."""
     if voice.format != background.format or voice.frame_count != background.frame_count:
         raise BackgroundMusicError("Voice and background tracks must have identical PCM formats and lengths.")
     if voice.format.sample_width != 2:
@@ -197,13 +214,33 @@ def mix_audio_tracks(voice: AudioBuffer, background: AudioBuffer, gain_db: float
         raise BackgroundMusicError("Background music gain must be a finite number of decibels.") from error
     if not math.isfinite(gain) or gain < 0:
         raise BackgroundMusicError("Background music gain must be a finite non-negative level.")
+    voice_samples = [sample[0] for sample in struct.iter_unpack("<h", voice.frames)]
+    background_samples = [round(sample[0] * gain) for sample in struct.iter_unpack("<h", background.frames)]
+    background_scale = 1.0
+    for voice_sample, background_sample in zip(voice_samples, background_samples):
+        if not background_sample:
+            continue
+        # Calculate the available headroom in the direction the background is
+        # moving. The voice remains unmodified; only this global background
+        # scale is reduced when an actual sum would clip.
+        limit = ((32767 - voice_sample) / background_sample if background_sample > 0
+                 else (-32768 - voice_sample) / background_sample)
+        background_scale = min(background_scale, max(0.0, limit))
     mixed = bytearray()
-    for (voice_sample,), (background_sample,) in zip(
-        struct.iter_unpack("<h", voice.frames), struct.iter_unpack("<h", background.frames)
-    ):
-        value = round(voice_sample + background_sample * gain)
-        mixed.extend(struct.pack("<h", max(-32768, min(32767, value))))
-    return AudioBuffer(voice.format, bytes(mixed))
+    peak = 0
+    for voice_sample, background_sample in zip(voice_samples, background_samples):
+        value = round(voice_sample + background_sample * background_scale)
+        value = max(-32768, min(32767, value))
+        peak = max(peak, abs(value))
+        mixed.extend(struct.pack("<h", value))
+    result = AudioBuffer(voice.format, bytes(mixed))
+    report = {
+        "peak_protection_applied": background_scale < 0.999999,
+        "background_scale": round(background_scale, 9),
+        "background_attenuation_db": round(20 * math.log10(background_scale), 7) if background_scale else None,
+        "mixed_peak_sample": peak,
+    }
+    return (result, report) if return_report else result
 
 
 def build_background_timeline(
@@ -211,6 +248,7 @@ def build_background_timeline(
     opening: AudioBuffer,
     middle: AudioBuffer,
     ending: AudioBuffer,
+    gains_db: dict[str, float] | None = None,
 ) -> tuple[AudioBuffer, AudioBuffer, dict[str, Any]]:
     """Return a timeline-aligned voice track, background track and audit data.
 
@@ -219,6 +257,11 @@ def build_background_timeline(
     this padded copy is the track to use with the generated background track.
     """
     audio_format = voice.format
+    selected_gains = gains_db or {label: 0.0 for label in DEFAULT_SECTION_GAINS_DB}
+    if set(selected_gains) != set(DEFAULT_SECTION_GAINS_DB):
+        raise BackgroundMusicError("Background music gains must define opening, middle and ending.")
+    if audio_format.sample_width != 2:
+        raise BackgroundMusicError("Background music section gains currently require 16-bit PCM audio.")
     for label, audio in (("opening", opening), ("middle", middle), ("ending", ending)):
         if audio.format != audio_format:
             raise BackgroundMusicError(
@@ -237,7 +280,10 @@ def build_background_timeline(
 
     background_frames = bytearray(silence(audio_format, total_frames))
     opening_frames = min(opening.frame_count, voice_start)
-    _place(background_frames, audio_format, 0, opening.frames[: opening_frames * audio_format.frame_width])
+    _place(
+        background_frames, audio_format, 0,
+        scale_pcm_16bit(opening.frames[: opening_frames * audio_format.frame_width], selected_gains["opening"]),
+    )
 
     middle_frames = middle_end - middle_start
     middle_loop_count = 0
@@ -247,9 +293,9 @@ def build_background_timeline(
             background_frames,
             audio_format,
             middle_start,
-            _repeat_to_length(middle.frames, audio_format.frame_width, middle_frames),
+            scale_pcm_16bit(_repeat_to_length(middle.frames, audio_format.frame_width, middle_frames), selected_gains["middle"]),
         )
-    _place(background_frames, audio_format, ending_start, ending.frames)
+    _place(background_frames, audio_format, ending_start, scale_pcm_16bit(ending.frames, selected_gains["ending"]))
 
     voice_track_frames = bytearray(silence(audio_format, total_frames))
     _place(voice_track_frames, audio_format, voice_start, voice.frames)
@@ -276,6 +322,7 @@ def build_background_timeline(
             "middle_delay_after_voice_seconds": MIDDLE_DELAY_AFTER_VOICE_SECONDS,
             "ending_lead_before_voice_end_seconds": ENDING_LEAD_SECONDS,
         },
+        "gains_db": {label: float(selected_gains[label]) for label in DEFAULT_SECTION_GAINS_DB},
         "placements": {
             "opening": {
                 "start_frame": 0,
@@ -314,14 +361,37 @@ def _audio_artifact_key(language: str) -> str:
     return "audio_zh_cn" if language == "zh-CN" else "audio_en"
 
 
+def resolved_section_gains(
+    production: dict[str, Any], language: str, explicit_gains: dict[str, float] | None, legacy_gain: float | None,
+) -> dict[str, float]:
+    """Resolve new per-section settings while accepting old single-gain packages."""
+    configured = production.get("background_music", {}).get(language, {})
+    candidate = explicit_gains if explicit_gains is not None else configured.get("gains_db")
+    if candidate is not None:
+        if not isinstance(candidate, dict) or set(candidate) != set(DEFAULT_SECTION_GAINS_DB):
+            raise BackgroundMusicError("Background music gains must define opening, middle and ending.")
+        try:
+            gains = {label: float(candidate[label]) for label in DEFAULT_SECTION_GAINS_DB}
+        except (TypeError, ValueError) as error:
+            raise BackgroundMusicError("Background music gains must be finite decibel values.") from error
+    else:
+        fallback = legacy_gain if legacy_gain is not None else configured.get("gain_db")
+        gains = ({label: float(fallback) for label in DEFAULT_SECTION_GAINS_DB}
+                 if fallback is not None else dict(DEFAULT_SECTION_GAINS_DB))
+    if any(not math.isfinite(value) for value in gains.values()):
+        raise BackgroundMusicError("Background music gains must be finite decibel values.")
+    return gains
+
+
 def add_background_music(
     production_path: Path,
     opening_path: Path,
     middle_path: Path,
     ending_path: Path,
     language: str | None = None,
-    gain_db: float = -18.0,
+    gain_db: float | None = None,
     mixed_output_path: Path | None = None,
+    gains_db: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Create aligned voice, background, and mixed WAV tracks."""
     production = read_json(production_path)
@@ -340,14 +410,22 @@ def add_background_music(
     opening = load_audio(opening_path.resolve(), voice.format)
     middle = load_audio(middle_path.resolve(), voice.format)
     ending = load_audio(ending_path.resolve(), voice.format)
-    voice_track, background_track, timeline = build_background_timeline(voice, opening, middle, ending)
+    section_gains = resolved_section_gains(production, selected_language, gains_db, gain_db)
+    voice_track, background_track, timeline = build_background_timeline(
+        voice, opening, middle, ending, section_gains,
+    )
 
     output_dir = root / "audio" / selected_language
     voice_track_path = output_dir / "voice-track.wav"
     background_path = output_dir / "background-music.wav"
     mixed_path = mixed_output_path.resolve() if mixed_output_path is not None else output_dir / "mixed-with-background-music.wav"
     timeline_path = root / f"background-music.{selected_language}.json"
-    mixed_track = mix_audio_tracks(voice_track, background_track, gain_db)
+    mixed_track, peak_protection = mix_audio_tracks(voice_track, background_track, return_report=True)
+    applied_gains = {
+        label: (round(gain + peak_protection["background_attenuation_db"], 7)
+                if peak_protection["background_attenuation_db"] is not None else None)
+        for label, gain in section_gains.items()
+    }
     write_wav(voice_track_path, voice_track)
     write_wav(background_path, background_track)
     write_wav(mixed_path, mixed_track)
@@ -361,8 +439,14 @@ def add_background_music(
         "outputs": {
             "voice_track": {"path": relative_path(voice_track_path, root), "sha256": sha256_file(voice_track_path), "duration_seconds": round(voice_track.duration_seconds, 7)},
             "background_music": {"path": relative_path(background_path, root), "sha256": sha256_file(background_path), "duration_seconds": round(background_track.duration_seconds, 7)},
-            "mixed_audio": {"path": relative_path(mixed_path, root), "sha256": sha256_file(mixed_path), "duration_seconds": round(mixed_track.duration_seconds, 7), "background_gain_db": gain_db},
+            "mixed_audio": {
+                "path": relative_path(mixed_path, root), "sha256": sha256_file(mixed_path),
+                "duration_seconds": round(mixed_track.duration_seconds, 7),
+                "background_gains_db": section_gains, "peak_protection": peak_protection,
+            },
         },
+        "peak_protection": peak_protection,
+        "applied_gains_db": applied_gains,
     })
     write_json(timeline_path, timeline)
 
@@ -379,7 +463,9 @@ def add_background_music(
         "provider": "local_pcm_timeline",
         "timeline": relative_path(timeline_path, root),
         "rules": timeline["rules"],
-        "gain_db": gain_db,
+        "gains_db": section_gains,
+        "applied_gains_db": applied_gains,
+        "peak_protection": peak_protection,
     })
     write_json(production_path, production)
     return {
@@ -402,9 +488,19 @@ def main() -> int:
     parser.add_argument("--middle", required=True, type=Path)
     parser.add_argument("--ending", required=True, type=Path)
     parser.add_argument("--language", choices=("en", "zh-CN"))
-    parser.add_argument("--gain-db", type=float, default=-18.0, help="Background level relative to voice, default -18 dB.")
+    parser.add_argument("--gain-db", type=float, help="Legacy uniform background level for all sections.")
+    parser.add_argument("--opening-gain-db", type=float, help="Opening background gain in dB.")
+    parser.add_argument("--middle-gain-db", type=float, help="Middle background gain in dB.")
+    parser.add_argument("--ending-gain-db", type=float, help="Ending background gain in dB.")
     arguments = parser.parse_args()
     try:
+        section_arguments = [arguments.opening_gain_db, arguments.middle_gain_db, arguments.ending_gain_db]
+        if arguments.gain_db is not None and any(value is not None for value in section_arguments):
+            raise BackgroundMusicError("Use --gain-db or all three section gain options, not both.")
+        if any(value is not None for value in section_arguments) and not all(value is not None for value in section_arguments):
+            raise BackgroundMusicError("Opening, middle and ending gain options must be supplied together.")
+        gains = (dict(zip(DEFAULT_SECTION_GAINS_DB, section_arguments))
+                 if all(value is not None for value in section_arguments) else None)
         result = add_background_music(
             arguments.production,
             arguments.opening,
@@ -412,6 +508,7 @@ def main() -> int:
             arguments.ending,
             arguments.language,
             arguments.gain_db,
+            gains_db=gains,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (OSError, ValueError, BackgroundMusicError) as error:

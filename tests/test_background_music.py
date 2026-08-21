@@ -63,6 +63,23 @@ class BackgroundMusicTests(unittest.TestCase):
         self.assertEqual(samples(background)[109:112], [0, 2, 2])
         self.assertEqual(samples(background)[229:232], [2, 3, 3])
 
+    def test_section_gains_raise_middle_above_opening_and_ending(self):
+        _, background, timeline = MODULE.build_background_timeline(
+            audio(200, 10), audio(80, 1000), audio(4, 1000), audio(60, 1000),
+            MODULE.DEFAULT_SECTION_GAINS_DB,
+        )
+        values = samples(background)
+        self.assertEqual(timeline["gains_db"], {"opening": -14.0, "middle": -12.0, "ending": -14.0})
+        self.assertGreater(abs(values[110]), abs(values[0]))
+        self.assertGreater(abs(values[110]), abs(values[230]))
+
+    def test_peak_protection_only_reduces_background(self):
+        voice = audio(2, 32000)
+        mixed, report = MODULE.mix_audio_tracks(voice, audio(2, 32000), return_report=True)
+        self.assertTrue(report["peak_protection_applied"])
+        self.assertLess(report["background_scale"], 1.0)
+        self.assertEqual(samples(mixed), [32767, 32767])
+
     def test_add_background_music_writes_two_tracks_and_production_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -94,3 +111,12 @@ class BackgroundMusicTests(unittest.TestCase):
             self.assertEqual(persisted["artifacts"]["background_music_en"], "audio/en/background-music.wav")
             self.assertEqual(persisted["artifacts"]["mixed_audio_en"], "audio/en/mixed-with-background-music.wav")
             self.assertEqual(persisted["background_music"]["en"]["state"], "complete")
+            self.assertEqual(persisted["background_music"]["en"]["gains_db"], {"opening": -14.0, "middle": -12.0, "ending": -14.0})
+            self.assertIn("peak_protection", persisted["background_music"]["en"])
+
+    def test_legacy_uniform_gain_remains_available(self):
+        production = {"background_music": {"en": {"gain_db": -18}}}
+        self.assertEqual(
+            MODULE.resolved_section_gains(production, "en", None, None),
+            {"opening": -18.0, "middle": -18.0, "ending": -18.0},
+        )
