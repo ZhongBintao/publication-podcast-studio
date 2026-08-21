@@ -19,7 +19,7 @@ from typing import Any, NamedTuple
 VOICE_START_SECONDS = 6.0
 MIDDLE_DELAY_AFTER_VOICE_SECONDS = 5.0
 ENDING_LEAD_SECONDS = 3.0
-DEFAULT_SECTION_GAINS_DB = {"opening": -14.0, "middle": -12.0, "ending": -14.0}
+DEFAULT_SECTION_GAINS_DB = {"opening": 8.0, "middle": 10.0, "ending": 8.0}
 DEFAULT_BACKGROUND_MUSIC_DIR = Path(__file__).resolve().parents[1] / "assets" / "background-music"
 DEFAULT_BACKGROUND_MUSIC_FILES = {
     "opening": DEFAULT_BACKGROUND_MUSIC_DIR / "opening.mp3",

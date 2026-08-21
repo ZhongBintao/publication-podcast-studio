@@ -69,7 +69,7 @@ class BackgroundMusicTests(unittest.TestCase):
             MODULE.DEFAULT_SECTION_GAINS_DB,
         )
         values = samples(background)
-        self.assertEqual(timeline["gains_db"], {"opening": -14.0, "middle": -12.0, "ending": -14.0})
+        self.assertEqual(timeline["gains_db"], {"opening": 8.0, "middle": 10.0, "ending": 8.0})
         self.assertGreater(abs(values[110]), abs(values[0]))
         self.assertGreater(abs(values[110]), abs(values[230]))
 
@@ -111,7 +111,7 @@ class BackgroundMusicTests(unittest.TestCase):
             self.assertEqual(persisted["artifacts"]["background_music_en"], "audio/en/background-music.wav")
             self.assertEqual(persisted["artifacts"]["mixed_audio_en"], "audio/en/mixed-with-background-music.wav")
             self.assertEqual(persisted["background_music"]["en"]["state"], "complete")
-            self.assertEqual(persisted["background_music"]["en"]["gains_db"], {"opening": -14.0, "middle": -12.0, "ending": -14.0})
+            self.assertEqual(persisted["background_music"]["en"]["gains_db"], {"opening": 8.0, "middle": 10.0, "ending": 8.0})
             self.assertIn("peak_protection", persisted["background_music"]["en"])
 
     def test_legacy_uniform_gain_remains_available(self):

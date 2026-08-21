@@ -70,8 +70,9 @@ artifacts.
 Every successful TTS media run automatically applies the skill's packaged
 three-part background-music bed. No extra user command is required. The
 default mix keeps the original voice content at full level and uses independent
-background gains of `-14 dB` for opening, `-12 dB` for middle and `-14 dB` for
-ending. If their combination with the voice would clip, peak protection
+background gains of `+8 dB` for opening, `+10 dB` for middle and `+8 dB` for
+ending. The middle section is intentionally slightly more present than the
+opening and ending. If their combination with the voice would clip, peak protection
 attenuates only the background and records the applied gains. If a packaged
 asset is missing or cannot be decoded, the media run fails instead of silently
 producing a video without music.
