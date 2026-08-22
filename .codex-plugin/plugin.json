@@ -1,6 +1,6 @@
 {
   "name": "economist-podcast-studio",
-  "version": "0.2.0",
+  "version": "0.2.0+codex.20260822024324",
   "description": "Vertical-first, source-linked Economist article extraction, conversational podcast scripts, reusable local media, and static-slide video rendering.",
   "author": {
     "name": "Economist Podcast Studio"
