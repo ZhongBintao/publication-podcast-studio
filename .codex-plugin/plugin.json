@@ -1,7 +1,7 @@
 {
   "name": "economist-podcast-studio",
-  "version": "0.1.0",
-  "description": "Source-linked Economist article extraction, conversational podcast scripts, Azure audio with default background music, and static-slide video rendering.",
+  "version": "0.2.0+codex.20260822024324",
+  "description": "Vertical-first, source-linked Economist article extraction, conversational podcast scripts, reusable local media, and static-slide video rendering.",
   "author": {
     "name": "Economist Podcast Studio"
   },
@@ -10,13 +10,14 @@
     "podcast",
     "audio",
     "subtitles",
-    "static-slide-video"
+    "static-slide-video",
+    "vertical-video"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Economist Podcast Studio",
     "shortDescription": "Produce source-linked Economist podcast videos",
-    "longDescription": "A local production plugin for extracting one selected Economist article, writing source-bounded conversational scripts, generating Azure Speech audio and captions with default background music, and rendering static-slide podcast videos.",
+    "longDescription": "A vertical-first local production plugin for extracting one selected Economist article, freezing source-bounded conversational scripts and captions, reusing completed media, and rendering the approved 9:16 static-slide podcast video without external APIs when local artifacts are available.",
     "developerName": "Economist Podcast Studio",
     "category": "Media",
     "capabilities": [
@@ -26,6 +27,7 @@
       "Video"
     ],
     "defaultPrompt": [
+      "Run the vertical-first local Economist article-to-podcast-video workflow.",
       "Extract one selected Economist article from a PDF.",
       "Turn a verified Economist article into a natural podcast script.",
       "Generate the selected podcast audio, captions, and static-slide video."

@@ -139,6 +139,18 @@ def issue_cover(article: dict[str, Any], root: Path) -> str:
     return relative_path(cover, root)
 
 
+def approved_slide_asset(article: dict[str, Any], root: Path) -> tuple[str, str]:
+    """Prefer the verified article image while retaining fixture compatibility."""
+    for asset in article.get("assets", []):
+        if not isinstance(asset, dict) or asset.get("role") != "article_image":
+            continue
+        asset_ref = asset.get("file")
+        if isinstance(asset_ref, str):
+            image = package_path(root, asset_ref, "article image")
+            return "article_asset", relative_path(image, root)
+    return "issue_cover", issue_cover(article, root)
+
+
 def build_storyboard(production_path: Path, questions_path: Path, storyboard_path: Path, opening_duration: float) -> dict[str, Any]:
     if opening_duration <= 0:
         raise StoryboardError("opening duration must be positive.")
@@ -151,7 +163,7 @@ def build_storyboard(production_path: Path, questions_path: Path, storyboard_pat
         raise StoryboardError("Final audio must be longer than one second for two template states.")
     questions, display = question_payload(questions_path, article.get("source_sha256"))
     opening_end = min(opening_duration, duration - 0.5)
-    cover = issue_cover(article, root)
+    asset_role, asset_file = approved_slide_asset(article, root)
     source_ids = sorted({source_id for question in questions for source_id in question["source_paragraph_ids"]})
     storyboard = {
         "format": STORYBOARD_FORMAT,
@@ -161,8 +173,8 @@ def build_storyboard(production_path: Path, questions_path: Path, storyboard_pat
         "display": display,
         "guide_questions": questions,
         "slides": [
-            {"id": "opening", "template_role": "opening", "start_seconds": 0, "end_seconds": round(opening_end, 3), "asset": {"role": "issue_cover", "file": cover}, "source_paragraph_ids": []},
-            {"id": "guide-questions", "template_role": "guide_questions", "start_seconds": round(opening_end, 3), "end_seconds": duration, "asset": {"role": "issue_cover", "file": cover}, "source_paragraph_ids": source_ids},
+            {"id": "opening", "template_role": "opening", "start_seconds": 0, "end_seconds": round(opening_end, 3), "asset": {"role": asset_role, "file": asset_file}, "source_paragraph_ids": []},
+            {"id": "guide-questions", "template_role": "guide_questions", "start_seconds": round(opening_end, 3), "end_seconds": duration, "asset": {"role": asset_role, "file": asset_file}, "source_paragraph_ids": source_ids},
         ],
     }
     validate_storyboard(storyboard, duration)
@@ -203,6 +215,7 @@ def display_content(article: dict[str, Any], storyboard: dict[str, Any], caption
     display = storyboard.get("display", {})
     byline = metadata.get("byline") or ""
     dateline = metadata.get("dateline") or ""
+    byline_dateline_issue = " · ".join(value for value in ("THE ECONOMIST", byline, dateline) if value)
     return {
         "article": {
             "kicker": metadata.get("kicker") or metadata.get("section") or "",
@@ -210,7 +223,7 @@ def display_content(article: dict[str, Any], storyboard: dict[str, Any], caption
             "headline_zh": display.get("headline_zh", ""),
             "subtitle": metadata.get("subtitle") or "",
             "subtitle_zh": display.get("subtitle_zh", ""),
-            "byline_dateline_issue": " · ".join(value for value in (byline, dateline) if value),
+            "byline_dateline_issue": byline_dateline_issue,
         },
         "guide_questions": storyboard["guide_questions"],
         "caption": {"current": {"en": caption_en, "zh": caption_zh}},

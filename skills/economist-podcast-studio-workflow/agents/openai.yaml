@@ -1,0 +1,4 @@
+interface:
+  display_name: "Economist Podcast Studio Workflow"
+  short_description: "Run the vertical-first article-to-video workflow locally"
+  default_prompt: "Use $economist-podcast-studio-workflow to validate one verified Economist article package, reuse completed local media when available, and render the approved 9:16 static-slide podcast video without external APIs."

@@ -47,9 +47,23 @@ Output:
 ## Current Focus
 
 The article, selected-script, Azure audio, alignment, caption, two-state
-storyboard and static-slide MP4 renderer stages are implemented. The next stage
-is the orchestrated multi-output request that invokes the completed skills with
-shared-artifact reuse.
+storyboard and static-slide MP4 renderer stages are implemented. The
+`economist-podcast-studio-workflow` entrypoint now coordinates those stages
+with a vertical-first, local-only reuse path and writes a package-level
+`workflow-report.json`.
+
+### Current Static Template Contract (2026-08-22)
+
+The 9:16 and 16:9 guide-question templates use fixed in-template red `01` and
+`02` number layers before the English question text. Question text is
+top-aligned with a fixed horizontal gap; number placement does not depend on
+runtime text measurement or caption content. Portrait opening metadata remains
+enlarged, with no page/CUE utility labels or subtitle frame. Images use contain
+placement and the bottom 10% remains reserved for platform details.
+
+The landscape-number update was validated with the offline unit and structure
+suite. A complete MP4 render was intentionally not rerun for this
+template-only change.
 
 ### August 2026 Real-Production Hold
 
@@ -85,15 +99,14 @@ User-selected variants -> verified source package -> dual-host selected scripts
 
 The repository root is the `economist-podcast-studio` plugin root. Its
 `.codex-plugin/plugin.json` manifest exposes the existing `skills/` directory,
-including the four workflow skills and their scripts, templates, tests and
+including the workflow skills and their scripts, templates, tests and
 packaged background-music assets. Keep the existing skill names and paths
 stable so their direct invocations remain compatible.
 
 This plugin is repository-local for now. It has no personal or repository
 marketplace entry, MCP server, app manifest or hook configuration. It packages
-the four skills as independently callable stages; the future
-`economist-podcast-studio-workflow` orchestrator remains separate and is not
-part of this plugin version.
+the workflow skills as independently callable stages plus the
+`economist-podcast-studio-workflow` top-level local-first coordinator.
 
 ## First Workflow Skill
 
@@ -131,18 +144,21 @@ successful small real Azure checks for the `en` and `en-zh` paths. The video
 renderer has an offline WAV/SRT fixture that verifies the two-state storyboard,
 caption timing, asset failure behaviour, output addressing and rerun reuse.
 
-## Future Orchestrated Production Request
+## Orchestrated Production Request
 
-After all workflow skills are complete, expose one top-level
-`economist-podcast-studio-workflow` entrypoint. It must show a brief usage
-description, collect all required information in one request, echo the frozen
-request for confirmation, and then run automatically without intermediate
-approval steps.
+The top-level `economist-podcast-studio-workflow` entrypoint accepts one
+frozen article package request and runs the local stages automatically. Its
+vertical-first default is `9:16`; it may also render `16:9` for comparison.
+With `--local-only`, it reuses completed scripts, reviewed captions, WAV audio
+and approved assets, and it never calls an external provider:
 
-This top-level entrypoint is not implemented in plugin version `0.1.0`. Until
-it exists, production invokes the completed skills individually in the order
-described above. The request may select one or more values in each output
-dimension:
+```bash
+RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
+"$RUNTIME_PY" skills/economist-podcast-studio-workflow/scripts/economist_podcast_studio_workflow.py run \
+  OUTPUT/articles/ARTICLE-DIRECTORY --local-only --variant en-zh --aspect-ratio 9:16
+```
+
+The request shape remains compatible with the future multi-output matrix:
 
 ```json
 {
@@ -159,7 +175,8 @@ orchestrator must deduplicate shared work: article extraction and scripts are
 generated once, an English audio track is shared by `en` and `en-zh`, and a
 Chinese audio track is generated only when `zh-CN` is requested.
 
-The final production matrix is the requested variant × voice profile × aspect
+The current coordinator executes one frozen variant and voice profile per run;
+the final production matrix remains the requested variant × voice profile × aspect
 ratio combination. Every combination must have an addressable artifact path;
 one output must never overwrite another. `production.json` remains the sole
 run configuration and state file, with per-variant, per-voice, and per-ratio
@@ -170,8 +187,8 @@ or layout settings.
 ## Original-Faithful Podcast v1
 
 The current script/media skill boundary processes one variant at a time. The
-future top-level workflow may request one or more of these variants and invoke
-the corresponding branches with shared-artifact reuse:
+top-level workflow invokes the corresponding branch with shared-artifact
+reuse; multi-variant batching remains a future extension:
 
 - `en`: English audio with English-only captions.
 - `en-zh`: English audio with one complete English sentence on the first line

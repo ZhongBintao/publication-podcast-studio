@@ -1,6 +1,6 @@
 ---
 name: economist-static-slide-video
-description: Create a source-linked two-state storyboard and render non-animated 16:9 or 9:16 Economist static-slide MP4 files from completed Azure audio and canonical captions.
+description: Create a source-linked two-state storyboard and render the vertical-first 9:16 or optional 16:9 Economist static-slide MP4 from completed local audio and canonical captions.
 ---
 
 # Economist Static-Slide Video
@@ -75,7 +75,8 @@ valid final MP4.
   ratio, invalid cue timeline or non-contiguous slide timing.
 - Structured cue timestamps drive reviewed bilingual caption-frame changes.
   `en-zh` renders English above Chinese in one shared centred vertical flow;
-  each language independently wraps to complete visual lines. In the 16:9
+  each language independently wraps to complete visual lines. Both ratios use
+  a maximum of two lines per language. In the 16:9
   layout, the caption rail is fixed while the two language blocks use compact
   105% line spacing and a fixed 6 px inter-language gap. English uses Arial
   Bold and Chinese uses Noto Sans SC Medium, with a maximum of two lines per
@@ -88,8 +89,12 @@ valid final MP4.
   black band. A cue that cannot fit two complete lines at the minimum readable
   size is rejected safely rather than truncated or split. The 16:9
   cover slot is shortened to keep it above the caption area, and the guide
-  question pair uses a tighter vertical gap. The portrait layout retains its
-  existing adaptive caption behaviour. Legacy SRT packages remain supported
+  question pair uses a tighter vertical gap. The portrait layout uses the
+  vertical free-flow template: all media is contained without crop or stretch,
+  metadata uses the enlarged opening hierarchy, guide questions carry red 01/02
+  markers with slightly larger Chinese translations, no page/CUE utility labels
+  or divider lines are rendered, and the bottom 10% is reserved for platform
+  detail overlays. Legacy SRT packages remain supported
   with their original text and timing, but are never re-partitioned.
 - Chinese uses native full-width punctuation in Noto Sans SC Regular, with
   STHeiti Medium fallback. Closing punctuation is bound to its preceding

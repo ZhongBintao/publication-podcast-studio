@@ -327,7 +327,9 @@ def render_editorial_frame(article_path: Path, aspect_ratio: str, caption_en: st
     image_path = issue_media_path(article_path, package, image_override)
     canvas = Image.new("RGB", CANVASES[aspect_ratio], LANDSCAPE_PAPER if aspect_ratio == "16:9" else PAPER)
     draw = ImageDraw.Draw(canvas)
-    fit = "contain" if media_role == "issue_cover" else "crop"
+    # Vertical and horizontal source images are always contained. The template
+    # may leave letterboxing, but it must never crop or distort verified art.
+    fit = "contain"
     kicker = (article.get("kicker") or article.get("section") or "").upper()
     subtitle = article.get("subtitle") or ""
     attribution = metadata_line(article)
@@ -347,18 +349,20 @@ def render_editorial_frame(article_path: Path, aspect_ratio: str, caption_en: st
         caption_x, caption_y, caption_width = 140, 900, 1620
         en_max = zh_max = 32
     else:
-        rail_y, rail_height = 1660, 260
-        place_media(canvas, image_path, (173, 39, 734, 914), fit)
-        kicker_font = font(SANS_FONTS, 24)
-        draw.text((42, 1055), kicker, font=kicker_font, fill=RED)
-        title_font, title_lines = fitted_text(draw, article["headline"], SERIF_FONTS, 76, 50, 960, 3)
-        title_bottom = draw_lines(draw, (42, 1155), title_lines, title_font, INK, 16)
-        subtitle_font, subtitle_lines = fitted_text(draw, subtitle, SANS_FONTS, 31, 24, 940, 2)
-        subtitle_bottom = draw_lines(draw, (42, max(1450, title_bottom + 65)), subtitle_lines, subtitle_font, INK, 10)
-        if attribution and subtitle_bottom < 1605:
-            draw.text((42, min(1605, subtitle_bottom + 30)), attribution, font=font(SANS_FONTS, 22), fill=INK)
-        caption_x, caption_y, caption_width = 54, 1704, 972
-        en_max, zh_max = 32, 30
+        # The formal portrait template is a compact free-flow stack. The last
+        # 10% of the frame is intentionally left empty for platform details;
+        # captions end above that boundary and never enter it.
+        place_media(canvas, image_path, (140, 80, 800, 480), fit)
+        kicker_font = font(SANS_FONTS, 21)
+        draw.text((42, 615), kicker, font=kicker_font, fill=RED)
+        title_font, title_lines = fitted_text(draw, article["headline"], SERIF_FONTS, 62, 42, 960, 3)
+        title_bottom = draw_lines(draw, (42, 665), title_lines, title_font, INK, 10)
+        subtitle_font, subtitle_lines = fitted_text(draw, subtitle, SANS_FONTS, 27, 20, 940, 2)
+        subtitle_bottom = draw_lines(draw, (42, max(885, title_bottom + 35)), subtitle_lines, subtitle_font, INK, 7)
+        if attribution and subtitle_bottom < 1240:
+            draw.text((42, min(1240, subtitle_bottom + 24)), attribution, font=font(SANS_FONTS, 19), fill=INK)
+        caption_x, caption_y, caption_width = 54, 1415, 972
+        en_max, zh_max = 30, 28
 
     if aspect_ratio == "16:9":
         en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
@@ -370,8 +374,7 @@ def render_editorial_frame(article_path: Path, aspect_ratio: str, caption_en: st
         draw_caption_lines(canvas, caption_x, caption_y, caption_width, en_lines, en_font, en_gap)
         draw_caption_lines(canvas, caption_x, caption_y + round((en_height + en_gap) * len(en_lines)) + 6, caption_width, zh_lines, zh_font, zh_gap)
     else:
-        draw.rectangle((0, rail_y, canvas.width, canvas.height), fill="#262626")
-        en_font, en_lines = fitted_text(draw, caption_en, SANS_FONTS, en_max, 18, caption_width, 2, allow_truncation=False, balance=True)
+        en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
         zh_font, zh_lines = fitted_text(draw, caption_zh, NOTO_SANS_SC_FONTS, zh_max, 18, caption_width, 2, weight="medium", allow_truncation=False, balance=True)
         en_gap = max(0, round(glyph_height(draw, en_font) * 0.05))
         zh_gap = max(0, round(glyph_height(draw, zh_font) * 0.05))

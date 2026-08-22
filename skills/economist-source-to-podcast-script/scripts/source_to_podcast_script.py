@@ -593,7 +593,7 @@ def init_production(
         "languages": languages,
         "speakers": {"primary": "primary", "secondary": "secondary"},
         "target_duration_minutes": {"minimum": 8, "maximum": 12, "policy": "coverage_first"},
-        "output": {"caption_formats": ["srt", "vtt"], "aspect_ratios": aspect_ratios or ["16:9"]},
+        "output": {"caption_formats": ["srt", "vtt"], "aspect_ratios": aspect_ratios or ["9:16"]},
         "speech": {
             "provider": "azure-speech",
             "region": region,
