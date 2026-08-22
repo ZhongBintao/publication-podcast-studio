@@ -21,7 +21,7 @@ SCRIPT_DIR = Path(__file__).parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from preview_visual_system import read_definition, render_template
+from preview_visual_system import read_definition, render_template, validate_subtitle_mode
 from render_static_slide_template import audio_duration, concat_manifest, cue_text, parse_srt
 
 
@@ -29,6 +29,7 @@ ROOT = Path(__file__).parents[1]
 TEMPLATE_PATH = ROOT / "templates" / "podcast-video-visual-system.v1.json"
 STORYBOARD_FORMAT = "economist-static-slide-storyboard"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
+SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
 
 
 class StoryboardError(ValueError):
@@ -265,13 +266,21 @@ def legacy_caption_cues(path: Path, variant: str) -> list[dict[str, Any]]:
     return result
 
 
-def caption_fields(cue: dict[str, Any] | None, variant: str) -> tuple[str, str]:
+def caption_fields(cue: dict[str, Any] | None, variant: str, subtitle_mode: str = "default") -> tuple[str, str]:
+    try:
+        subtitle_mode = validate_subtitle_mode(subtitle_mode)
+    except ValueError as error:
+        raise StoryboardError(str(error)) from error
+    if subtitle_mode == "en-only" and variant == "zh-CN":
+        raise StoryboardError("subtitle_mode=en-only requires an English caption source.")
     if cue is None:
         return "", ""
     if variant == "en":
         return str(cue.get("en_text", "")), ""
     if variant == "zh-CN":
         return "", str(cue.get("zh_text", ""))
+    if subtitle_mode == "en-only":
+        return str(cue.get("en_text", "")), ""
     return str(cue.get("en_text", "")), str(cue.get("zh_text", ""))
 
 
@@ -300,33 +309,50 @@ def active_item(items: list[dict[str, Any]], moment: float, start: str, end: str
     return next((item for item in items if float(item[start]) <= moment < float(item[end])), None)
 
 
-def output_path(root: Path, variant: str, voice_profile: str, aspect_ratio: str) -> Path:
-    return root / "video" / variant / voice_profile / aspect_ratio.replace(":", "x") / "final.mp4"
+def output_path(root: Path, variant: str, voice_profile: str, aspect_ratio: str, subtitle_mode: str = "default") -> Path:
+    parts = ["video", variant, voice_profile]
+    if subtitle_mode != "default":
+        parts.append(subtitle_mode)
+    parts.extend((aspect_ratio.replace(":", "x"), "final.mp4"))
+    return root.joinpath(*parts)
 
 
-def render_storyboard(production_path: Path, storyboard_path: Path, aspect_ratio: str, voice_profile: str = "default") -> tuple[Path, bool]:
+def render_storyboard(
+    production_path: Path,
+    storyboard_path: Path,
+    aspect_ratio: str,
+    voice_profile: str = "default",
+    subtitle_mode: str | None = None,
+) -> tuple[Path, bool]:
     if not shutil.which("ffmpeg"):
         raise StoryboardError("ffmpeg is required to render static-slide video.")
     root = production_path.parent.resolve()
     production = read_json(production_path)
+    try:
+        subtitle_mode = validate_subtitle_mode(subtitle_mode or production.get("output", {}).get("subtitle_mode", "default"))
+    except ValueError as error:
+        raise StoryboardError(str(error)) from error
     permitted = production.get("output", {}).get("aspect_ratios", [])
     if aspect_ratio not in {"16:9", "9:16"} or aspect_ratio not in permitted:
         raise StoryboardError("The requested aspect ratio is not frozen in production.json output.aspect_ratios.")
     _, article = resolve_article(production, root)
     variant, audio, captions, structured_cues_path = resolve_media(production, root)
+    if subtitle_mode == "en-only" and variant == "zh-CN":
+        raise StoryboardError("subtitle_mode=en-only requires an English caption source.")
     duration = audio_duration(audio)
     storyboard = read_json(storyboard_path)
     validate_storyboard(storyboard, duration)
     definition = read_definition(TEMPLATE_PATH)
-    destination = output_path(root, variant, voice_profile, aspect_ratio)
+    destination = output_path(root, variant, voice_profile, aspect_ratio, subtitle_mode)
     fingerprint_inputs = {
         "template": sha256_file(TEMPLATE_PATH), "storyboard": sha256_file(storyboard_path), "audio": sha256_file(audio),
         "captions": sha256_file(captions), "structured_captions": sha256_file(structured_cues_path) if structured_cues_path else None,
         "renderer": sha256_file(Path(__file__)),
         "display_renderer": sha256_file(SCRIPT_DIR / "preview_visual_system.py"), "aspect_ratio": aspect_ratio,
+        "subtitle_mode": subtitle_mode,
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_inputs, sort_keys=True).encode()).hexdigest()
-    output_key = f"{variant}/{voice_profile}/{aspect_ratio}"
+    output_key = f"{variant}/{voice_profile}/{aspect_ratio}" if subtitle_mode == "default" else f"{variant}/{voice_profile}/{subtitle_mode}/{aspect_ratio}"
     record = production.get("video", {}).get("outputs", {}).get(output_key, {})
     if destination.is_file() and record.get("state") == "complete" and record.get("input_sha256") == fingerprint:
         return destination, True
@@ -344,7 +370,7 @@ def render_storyboard(production_path: Path, storyboard_path: Path, aspect_ratio
             cue = active_item(cues, midpoint, "start", "end")
             if slide is None:
                 raise StoryboardError(f"No storyboard slide is active at {midpoint:.3f}s.")
-            caption_en, caption_zh = caption_fields(cue, variant)
+            caption_en, caption_zh = caption_fields(cue, variant, subtitle_mode)
             cover = package_path(root, slide["asset"]["file"], f"asset for {slide['id']}")
             caption_layout: list[dict[str, Any]] = []
             frame = render_template(
@@ -355,6 +381,7 @@ def render_storyboard(production_path: Path, storyboard_path: Path, aspect_ratio
                 1080 if aspect_ratio == "16:9" else 1920,
                 1920 if aspect_ratio == "16:9" else 1080,
                 caption_layout,
+                subtitle_mode,
             )
             render_diagnostics.append({
                 "start_seconds": round(start, 7), "end_seconds": round(end, 7), "caption_layout": caption_layout,
@@ -373,7 +400,8 @@ def render_storyboard(production_path: Path, storyboard_path: Path, aspect_ratio
     validate_layout_diagnostics(render_diagnostics)
     report_path = destination.parent / "render-report.json"
     write_json(report_path, {
-        "schema_version": "1.0", "variant": variant, "aspect_ratio": aspect_ratio,
+        "schema_version": "1.0", "variant": variant, "aspect_ratio": aspect_ratio, "subtitle_mode": subtitle_mode,
+        "visible_caption_languages": ["en"] if subtitle_mode == "en-only" else (["zh"] if variant == "zh-CN" else ["en", "zh"]),
         "caption_source": "structured" if structured_cues_path else "legacy_srt", "frames": render_diagnostics,
     })
     outputs = production.setdefault("video", {}).setdefault("outputs", {})
@@ -386,6 +414,7 @@ def render_storyboard(production_path: Path, storyboard_path: Path, aspect_ratio
         "storyboard": relative_path(storyboard_path, root),
         "render_report": relative_path(report_path, root),
         "render_report_sha256": sha256_file(report_path),
+        "subtitle_mode": subtitle_mode,
     }
     write_json(production_path, production)
     return destination, False
@@ -404,13 +433,14 @@ def main() -> int:
     render.add_argument("storyboard_json", type=Path)
     render.add_argument("--aspect-ratio", choices=("16:9", "9:16"), required=True)
     render.add_argument("--voice-profile", default="default")
+    render.add_argument("--subtitle-mode", choices=tuple(sorted(SUPPORTED_SUBTITLE_MODES)))
     args = parser.parse_args()
     try:
         if args.command == "init-storyboard":
             storyboard = build_storyboard(args.production_json.resolve(), args.guide_questions_json.resolve(), args.storyboard_json.resolve(), args.opening_duration)
             print(json.dumps({"status": "complete", "storyboard": str(args.storyboard_json.resolve()), "slides": len(storyboard["slides"])}, ensure_ascii=False))
         else:
-            destination, reused = render_storyboard(args.production_json.resolve(), args.storyboard_json.resolve(), args.aspect_ratio, args.voice_profile)
+            destination, reused = render_storyboard(args.production_json.resolve(), args.storyboard_json.resolve(), args.aspect_ratio, args.voice_profile, args.subtitle_mode)
             print(json.dumps({"status": "complete", "output": str(destination), "reused": reused}, ensure_ascii=False))
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError, StoryboardError) as error:

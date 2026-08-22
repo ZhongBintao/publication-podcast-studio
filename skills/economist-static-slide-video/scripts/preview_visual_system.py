@@ -55,6 +55,8 @@ SAMPLE_CONTENT = {
     },
 }
 
+SUBTITLE_MODES = {"default", "en-only"}
+
 
 def read_definition(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -145,6 +147,13 @@ def has_cjk(value: str) -> bool:
 def normalize_caption_text(value: str) -> str:
     """Use a universally covered visual equivalent for fragile dash glyphs."""
     return value.replace("\u2011", "-").replace("\u00ad", "-")
+
+
+def validate_subtitle_mode(value: str) -> str:
+    mode = str(value or "default").strip().lower()
+    if mode not in SUBTITLE_MODES:
+        raise ValueError(f"Unsupported subtitle mode: {value}")
+    return mode
 
 
 def is_sans(font_value: Any) -> bool:
@@ -429,10 +438,15 @@ def caption_layers_for_frame(
     layers: dict[str, dict[str, Any]],
     content: dict[str, Any],
     scale: float,
+    subtitle_mode: str = "default",
 ) -> dict[str, dict[str, Any]]:
     """Prepare captions while preserving the prototype card and safe area."""
+    subtitle_mode = validate_subtitle_mode(subtitle_mode)
     caption_ids = ("caption_en", "caption_zh")
-    if "subtitle_rail" not in layers or not any(resolve(layers[name]["content_binding"], content).strip() for name in caption_ids):
+    visible_caption_ids = ("caption_en",) if subtitle_mode == "en-only" else caption_ids
+    for name in caption_ids:
+        layers[name] = {**layers[name], "visible": name in visible_caption_ids}
+    if "subtitle_rail" not in layers or not any(resolve(layers[name]["content_binding"], content).strip() for name in visible_caption_ids):
         return layers
 
     # Keep the landscape rail fixed, but flow the two languages as one compact
@@ -443,7 +457,7 @@ def caption_layers_for_frame(
         padding = round(8 * scale)
         language_gap = round(6 * scale)
         prepared: list[tuple[str, int, int, int, int]] = []
-        for name in caption_ids:
+        for name in visible_caption_ids:
             layer = dict(layers[name])
             layer["style"] = dict(layer.get("style", {}))
             layer["style"]["min_font_size_pt"] = int(layer["style"].get("min_font_size_pt", 16))
@@ -489,6 +503,30 @@ def caption_layers_for_frame(
         raise RuntimeError("Portrait caption card collides with protected content or the platform safe zone.")
     layers["subtitle_rail"] = rail
 
+    if subtitle_mode == "en-only":
+        layer = dict(layers["caption_en"])
+        style = dict(layer.get("style", {}))
+        style["unbounded_lines"] = False
+        style["max_lines"] = int(style.get("max_lines", 2))
+        style["letter_spacing"] = 0
+        style["alignment"] = "center"
+        value = normalize_caption_text(resolve(layer["content_binding"], content))
+        if value.strip():
+            _, _, width, _ = scaled_box(layer["bbox"], scale)
+            _, lines, line_height = fitted_adaptive_lines(draw, value, style, style, width, rail_height, scale)
+            inset_top, inset_bottom = text_insets(style, scale)
+            total_height = len(lines) * line_height + inset_top + inset_bottom
+            layer["bbox"] = [
+                layer["bbox"][0],
+                (rail_y + max(0, (rail_height - total_height) // 2)) / scale,
+                layer["bbox"][2],
+                total_height / scale,
+            ]
+        layer["style"] = style
+        layers["caption_en"] = layer
+        layers["caption_zh"]["bbox"] = [layers["caption_zh"]["bbox"][0], rail_y / scale, layers["caption_zh"]["bbox"][2], 0]
+        return layers
+
     for name in caption_ids:
         layer = dict(layers[name])
         style = dict(layer.get("style", {}))
@@ -511,6 +549,8 @@ def hex_rgb(value: str) -> tuple[int, int, int]:
 
 
 def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any], scale: float, diagnostics: list[dict[str, Any]] | None = None) -> None:
+    if layer.get("visible", True) is False:
+        return
     draw = ImageDraw.Draw(canvas)
     x, y, width, height = scaled_box(layer["bbox"], scale)
     style_blocks = layer.get("paragraphs") or [dict(layer["style"], binding=layer.get("content_binding", ""))]
@@ -628,7 +668,17 @@ def draw_image(canvas: Image.Image, layer: dict[str, Any], cover_path: Path, sca
         ImageDraw.Draw(canvas).rectangle((x, y, x + width - 1, y + height - 1), outline=border_color, width=border_width)
 
 
-def render_template(definition: dict[str, Any], template_name: str, cover_path: Path, content: dict[str, Any], output_height: int, output_width: int | None = None, diagnostics: list[dict[str, Any]] | None = None) -> Image.Image:
+def render_template(
+    definition: dict[str, Any],
+    template_name: str,
+    cover_path: Path,
+    content: dict[str, Any],
+    output_height: int,
+    output_width: int | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+    subtitle_mode: str = "default",
+) -> Image.Image:
+    subtitle_mode = validate_subtitle_mode(subtitle_mode)
     content = {**content, "design_tokens": definition["design_tokens"]}
     template = definition["templates"][template_name]
     canvas_width = template["canvas"]["width"]
@@ -638,9 +688,11 @@ def render_template(definition: dict[str, Any], template_name: str, cover_path: 
     draw = ImageDraw.Draw(canvas)
     layers = layer_map(definition, template_name)
     layers = prepare_portrait_opening_layers(draw, template, layers, content, scale)
-    layers = caption_layers_for_frame(draw, template, layers, content, scale)
+    layers = caption_layers_for_frame(draw, template, layers, content, scale, subtitle_mode)
     for layer_id in template["source_layer_order"]:
         layer = layers[layer_id]
+        if layer.get("visible", True) is False:
+            continue
         if layer["kind"] == "shape":
             x, y, width, height = scaled_box(layer["bbox"], scale)
             stroke = layer.get("stroke", "none")

@@ -155,7 +155,8 @@ and approved assets, and it never calls an external provider:
 ```bash
 RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
 "$RUNTIME_PY" skills/economist-podcast-studio-workflow/scripts/economist_podcast_studio_workflow.py run \
-  OUTPUT/articles/ARTICLE-DIRECTORY --local-only --variant en-zh --aspect-ratio 9:16
+  OUTPUT/articles/ARTICLE-DIRECTORY --local-only --variant en-zh --aspect-ratio 9:16 \
+  --subtitle-mode en-only
 ```
 
 The request shape remains compatible with the future multi-output matrix:
@@ -164,11 +165,16 @@ The request shape remains compatible with the future multi-output matrix:
 {
   "requested_variants": ["en", "en-zh", "zh-CN"],
   "voice_profiles": ["default"],
-  "aspect_ratios": ["16:9", "9:16"]
+  "aspect_ratios": ["16:9", "9:16"],
+  "subtitle_mode": "default"
 }
 ```
 
 `requested_variants` controls which language/caption products are generated.
+`subtitle_mode` is a presentation-only choice: `default` preserves the
+variant's normal caption projection, while `en-only` renders only approved
+English captions for `en` and `en-zh`. It is invalid for `zh-CN`; canonical SRT
+and structured caption cue files remain unchanged.
 `voice_profiles` controls which approved primary/secondary voice pairings are
 rendered. `aspect_ratios` controls which video layouts are rendered. The
 orchestrator must deduplicate shared work: article extraction and scripts are
@@ -192,9 +198,11 @@ reuse; multi-variant batching remains a future extension:
 
 - `en`: English audio with English-only captions.
 - `en-zh`: English audio with one complete English sentence on the first line
-  and its reviewed complete Chinese translation on the second line. Sentence
-  units are source-linked before synthesis and projected onto WordBoundary
-  timing; no Chinese audio script is generated for this variant.
+  and its reviewed complete Chinese translation on the second line by default.
+  `subtitle_mode=en-only` may render only the English line without changing the
+  audio or canonical bilingual cue data. Sentence units are source-linked
+  before synthesis and projected onto WordBoundary timing; no Chinese audio
+  script is generated for this variant.
 - `zh-CN`: Chinese audio with Chinese captions.
 
 The same verified article package can be reused for any requested combination;
@@ -222,27 +230,42 @@ It generates only the script required by the selected variant:
 - English is source-bounded rather than word-for-word source-preserving. The
   writing stage may paraphrase, condense, reorder related clauses, and recast
   formal prose into short spoken English, but may not invent facts, viewpoints,
-  causal links, examples, predictions or conclusions. It uses `verbatim`,
-  `sentence_split`, `reaction` and `prompt` segments. Final English
-  `spoken_text` must not retain parentheses or square brackets and must not end
-  with dangling commas, colons, dashes or semicolons. The production writing
-  path uses `english-request` followed by `finalize-english`; the legacy
-  deterministic `english` command remains a source-preserving fallback for
-  fixtures and recovery.
+  causal links, examples, predictions or conclusions. New production drafts
+  use `opening`, `body` and `closing` sections; the flat script uses
+  `opening`, `verbatim`, `sentence_split`, `reaction`, `prompt` and `closing`
+  segments. Final English `spoken_text` must not retain parentheses or square
+  brackets and must not end with dangling commas, colons, dashes or semicolons.
+  The production writing path uses `english-request` followed by
+  `finalize-english`; the legacy deterministic `english` command remains a
+  source-preserving fallback for fixtures and recovery.
 - English delivery should sound like prepared hosts talking through a reported
   story rather than an article being read aloud. Prefer short, direct clauses,
   contractions, relaxed connectors and natural questions and answers. Avoid
   written noun-plus-comma explanations; integrate context into complete spoken
-  clauses. Aim for 45--55% of English words per host, with a 40--60% accepted
-  range for normal-length scripts, and avoid more than three consecutive
-  segments by one host. Keep each English segment source-linked, while allowing
-  both hosts to speak within one source paragraph.
+  clauses. Aim for 45--55% of factual English words per host and enforce a
+  40--60% range whenever there are at least two factual segments. Allow
+  natural non-factual discourse markers from an open set; marker-only turns
+  fail, while repeated or filler-heavy delivery is only a warning. Use the
+  production-frozen `seeded_constrained_random` schedule: opening is `primary`,
+  closing is `secondary`, body runs are capped at four, and any six-segment
+  mechanical A/B alternation window is rejected. Keep each English body
+  segment source-linked, while allowing both hosts to speak within one source
+  paragraph. Generic opening and closing framing may have empty source links;
+  source-specific wrapper content must cite verified paragraphs.
 - Chinese is a paragraph-by-paragraph faithful spoken translation. It may
   split or merge sentences and reorder clauses within the same paragraph to
   sound natural in Chinese. Preserve every fact, number, attribution,
   condition and judgment; do not add explanation, context, examples, analysis
   or conclusions. Translate meaning rather than English word order, using
   short, clear spoken sentences and natural subjects and connectors.
+- Chinese scripts may additionally contain one controlled `opening` block and
+  one `closing` block around the body. These may create programme framing,
+  suspense, transitions, summaries and a natural sign-off. Empty source links
+  are allowed only for generic framing; any article fact, number, judgment or
+  concrete detail in a wrapper must cite one or more verified paragraphs.
+  Opening uses `primary`, closing uses `secondary`, and each wrapper is capped
+  at 120 readable Chinese characters. The final flat script remains one TTS,
+  WordBoundary and caption timeline.
 - Chinese final `spoken_text` is read-as-written TTS copy. Prefer common
   Chinese names; a bare English proper name is permitted when natural, but
   never use Chinese-plus-English aliases, parentheses, bracketed notes or
@@ -251,8 +274,9 @@ It generates only the script required by the selected variant:
   `spoken_text` and `source_paragraph_ids`. Both speakers may deliver
   source-linked body text. English scripts may contain source-linked
   `reaction` and `prompt` segments, and a source paragraph may use both
-  speakers. Chinese scripts retain paragraph-level speaker assignment and do
-  not use interaction segments. For short English articles, both hosts are
+  speakers. Chinese body scripts retain paragraph-level speaker assignment and
+  do not use interaction segments; wrapper segments use only `opening` and
+  `closing`. For short English articles, both hosts are
   used when there are at least two substantive units; longer scripts target a
   balanced word share and both hosts receive interaction opportunities.
   Do not duplicate the full English article in scripts, briefs or prompts.
@@ -271,7 +295,7 @@ It generates only the script required by the selected variant:
 For `en-zh`, the writing stage supplies a reviewed, source-linked schema-3.0
 sentence subtitle script. Azure Speech Translation phrase output is legacy
 `machine_unreviewed` compatibility data only; it cannot establish sentence
-pairs and cannot satisfy policy 5.1 publication or rendering requirements.
+pairs and cannot satisfy policy 5.2 publication or rendering requirements.
 
 ### Audio and Subtitle Route
 
@@ -285,6 +309,10 @@ ElevenLabs and CosyVoice are optional future adapters, not v1 dependencies.
 
 - English defaults to `en-US-Ava:DragonHDLatestNeural` for `primary` and
   `en-US-Andrew:DragonHDLatestNeural` with `temperature=1` for `secondary`.
+  Chinese defaults to `zh-CN-Xiaochen:DragonHDLatestNeural` for `primary` and
+  `zh-CN-Yunxiao:DragonHDFlashLatestNeural` for `secondary`, both with
+  `temperature=1`. Their UUIDs are optional production configuration metadata;
+  only voice names and supported parameters enter SSML.
   DragonHD synthesis uses the Python Speech SDK's `speak_ssml_async` API so
   WordBoundary alignment remains available. Its SSML must omit unsupported
   `mstts:express-as` and `<prosody>` controls; only approved `<voice>`
@@ -327,9 +355,9 @@ ElevenLabs and CosyVoice are optional future adapters, not v1 dependencies.
 
 The earlier route was verified with Jenny/Guy and Xiaoxiao/Yunxi test voices,
 including a real 32-second English sample and a real bilingual
-translation-caption sample. The current offline suite also verifies the Ava and
-Andrew DragonHD SSML contract; an explicit credential-gated live smoke test
-verifies both selected English voices and their WordBoundary events.
+translation-caption sample. The current offline suite verifies the Ava/Andrew
+DragonHD and Xiaochen/Yunxiao DragonHD/Flash SSML contracts; credential-gated
+live smoke tests cover both language pairs and their WordBoundary events.
 
 Voice IDs are configuration, not data-contract fields. A future production
 request may select one or more approved voice profiles, each containing the
@@ -384,18 +412,22 @@ scripts, reinterpret speaker assignments, or add dialogue content. `speaker_id`
 remains the only speaker-routing field and no new intermediate file is required.
 
 The video stage consumes `storyboard.json` and writes
-`video/<variant>/<voice-profile>/<aspect-ratio-with-x>/final.mp4`. Audio and
-caption artifacts must use the same voice-profile namespace when more than one
-profile is requested.
+`video/<variant>/<voice-profile>/<aspect-ratio-with-x>/final.mp4` for the
+default subtitle mode, or
+`video/<variant>/<voice-profile>/en-only/<aspect-ratio-with-x>/final.mp4` for
+English-only captions. Audio and caption artifacts must use the same
+voice-profile namespace when more than one profile is requested.
 
 `production.json` is the sole run configuration and state file. It stores
 relative artifact paths, hashes, frozen user choices, provider/model/voice
 identifiers, region and SDK/alignment method metadata, resumable segment progress
 and non-sensitive failure reasons. For v1, record the provider as
-`azure-speech`, the alignment method as `azure_word_boundary`, and the script
-generation policy version as `5.1` for the source-bounded, balanced two-host
-segmented narration contract. Existing `5.0` packages remain compatible and
-are not rewritten.
+  `azure-speech`, the alignment method as `azure_word_boundary`, and the script
+  generation policy version as `5.2` for the source-bounded, framed, balanced
+  two-host segmented narration contract. English `production.json` also
+  freezes `speaker_schedule.mode=seeded_constrained_random` and its seed;
+  omitted seeds derive from `SHA256(source_sha256 + ":" + "5.2")`. Existing
+  `5.0` and `5.1` packages remain compatible and are not rewritten.
 It must never contain a key, authorization header, signed URL or full secret
 request log. State is only `queued`, `running`, `complete` or `failed`.
 

@@ -151,3 +151,30 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             }]}), encoding="utf-8")
             cues = MODULE.structured_caption_cues(path, "en-zh")
             self.assertEqual(MODULE.caption_fields(cues[0], "en-zh"), ("English sentence.", "完整中文句子。"))
+
+    def test_english_only_caption_projection_and_addressing(self):
+        cue = {"en_text": "English sentence.", "zh_text": "完整中文句子。"}
+        self.assertEqual(MODULE.caption_fields(cue, "en-zh", "en-only"), ("English sentence.", ""))
+        self.assertEqual(
+            MODULE.output_path(Path("/tmp/package"), "en-zh", "default", "9:16", "en-only"),
+            Path("/tmp/package/video/en-zh/default/en-only/9x16/final.mp4"),
+        )
+        with self.assertRaisesRegex(MODULE.StoryboardError, "English caption source"):
+            MODULE.caption_fields(cue, "zh-CN", "en-only")
+
+    def test_render_storyboard_english_only_uses_separate_output_and_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            storyboard_path = root / "storyboard.json"
+            MODULE.build_storyboard(production, questions, storyboard_path, 1.0)
+            output, reused = MODULE.render_storyboard(production, storyboard_path, "9:16", subtitle_mode="en-only")
+            self.assertFalse(reused)
+            self.assertEqual(output.relative_to(root.resolve()).as_posix(), "video/en-zh/default/en-only/9x16/final.mp4")
+            persisted = json.loads(production.read_text(encoding="utf-8"))
+            record = persisted["video"]["outputs"]["en-zh/default/en-only/9:16"]
+            self.assertEqual(record["subtitle_mode"], "en-only")
+            report = json.loads((root / record["render_report"]).read_text(encoding="utf-8"))
+            self.assertEqual(report["subtitle_mode"], "en-only")
+            self.assertEqual(report["visible_caption_languages"], ["en"])
+            self.assertTrue(MODULE.render_storyboard(production, storyboard_path, "9:16", subtitle_mode="en-only")[1])

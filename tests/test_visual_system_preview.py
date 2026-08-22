@@ -87,6 +87,43 @@ class VisualSystemPreviewTests(unittest.TestCase):
                     self.assertEqual(item["font"], "Arial Bold/bold")
                     self.assertEqual(item["font_weight"], "bold")
 
+    def test_english_only_mode_hides_chinese_caption_layer_in_all_template_states(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cover = root / "cover.png"
+            Image.new("RGB", (600, 800), "#A61919").save(cover)
+            definition = MODULE.read_definition(MODULE.DEFAULT_DEFINITION)
+            content = {**MODULE.SAMPLE_CONTENT, "caption": {"current": {
+                "en": "A complete English subtitle sentence.",
+                "zh": "一条完整的中文字幕句子。",
+            }}}
+            for template, height, width in (
+                ("landscape_opening", 1080, 1920),
+                ("landscape_guide_questions", 1080, 1920),
+                ("portrait_opening", 1920, 1080),
+                ("portrait_guide_questions", 1920, 1080),
+            ):
+                diagnostics = []
+                MODULE.render_template(definition, template, cover, content, height, width, diagnostics, "en-only")
+                caption_diagnostics = [item for item in diagnostics if item["layer"].startswith("caption_")]
+                self.assertEqual([item["layer"] for item in caption_diagnostics], ["caption_en"])
+                english = caption_diagnostics[0]
+                x, _, safe_width, _ = english["safe_bbox"]
+                for line_x, _, line_width, _ in english["line_bboxes"]:
+                    self.assertAlmostEqual(line_x + line_width / 2, x + safe_width / 2, delta=2)
+                self.assertEqual(english["font"], "Arial Bold/bold")
+
+                layers = MODULE.caption_layers_for_frame(
+                    __import__("PIL.ImageDraw", fromlist=["ImageDraw"]).Draw(Image.new("RGB", (width, height))),
+                    definition["templates"][template],
+                    MODULE.layer_map(definition, template),
+                    content,
+                    height / definition["templates"][template]["canvas"]["height"],
+                    "en-only",
+                )
+                self.assertFalse(layers["caption_zh"]["visible"])
+                self.assertEqual(layers["caption_zh"]["bbox"][3], 0)
+
     def test_font_selection_covers_special_punctuation_and_mixed_latin_cjk_text(self):
         value = "Mixed ‘quotes’ “smart punctuation” ‑ – and 中文，。"
         path = MODULE.font_path(

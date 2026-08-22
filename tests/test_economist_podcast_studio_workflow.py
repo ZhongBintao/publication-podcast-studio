@@ -91,6 +91,17 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.WorkflowBlocked, "Azure Speech"):
                 MODULE.run_workflow(root, "en-zh", ["9:16"], "default", True, 1.0)
 
+    def test_local_only_freezes_english_only_mode_and_uses_separate_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            report = MODULE.run_workflow(root, "en-zh", ["9:16"], "default", True, 1.0, "en-only")
+            self.assertEqual(report["subtitle_mode"], "en-only")
+            self.assertTrue((root / "video" / "en-zh" / "default" / "en-only" / "9x16" / "final.mp4").is_file())
+            production = json.loads((root / "production.json").read_text())
+            self.assertEqual(production["output"]["subtitle_mode"], "en-only")
+            self.assertEqual(production["workflow"]["request"]["subtitle_mode"], "en-only")
+
 
 if __name__ == "__main__":
     unittest.main()

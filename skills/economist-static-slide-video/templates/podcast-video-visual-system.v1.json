@@ -400,7 +400,7 @@
   "content_contract": {
     "article": ["kicker", "headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline_issue", "issue_cover.file"],
     "guide_questions": "Exactly two entries; each entry has question and translation_zh. Both landscape and portrait templates prefix fixed red 01 and 02 markers.",
-    "caption": "Use the canonical timed cue. For en use caption.current.en; for zh-CN use caption.current.zh; for en-zh display both in the fixed English-then-Chinese order."
+    "caption": "Use the canonical timed cue. For en use caption.current.en; for zh-CN use caption.current.zh; for en-zh display both in the fixed English-then-Chinese order. With production.output.subtitle_mode=en-only, render only caption.current.en and structurally hide caption_zh without changing the canonical cue data."
   },
   "template_selection": {
     "16:9": { "opening": "landscape_opening", "guide_questions": "landscape_guide_questions" },

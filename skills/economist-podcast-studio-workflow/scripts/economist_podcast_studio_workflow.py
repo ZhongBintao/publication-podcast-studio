@@ -30,6 +30,7 @@ WORKFLOW_NAME = "economist-podcast-studio-workflow"
 WORKFLOW_VERSION = "0.2.0"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_ASPECT_RATIOS = {"16:9", "9:16"}
+SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
 MAX_GUIDE_QUESTION_WORDS = 22
 MIN_GUIDE_QUESTION_WORDS = 8
 MAX_ENGLISH_CAPTION_CHARS = 84
@@ -171,23 +172,39 @@ def validate_media(root: Path, production: dict[str, Any], variant: str, artifac
     return paths
 
 
-def freeze_vertical_request(production: dict[str, Any], variant: str, ratios: list[str], voice_profile: str, local_only: bool) -> None:
+def freeze_vertical_request(
+    production: dict[str, Any],
+    variant: str,
+    ratios: list[str],
+    voice_profile: str,
+    local_only: bool,
+    subtitle_mode: str,
+) -> None:
     output = production.setdefault("output", {})
     frozen = list(output.get("aspect_ratios", [])) if isinstance(output.get("aspect_ratios"), list) else []
     for ratio in ratios:
         if ratio not in frozen:
             frozen.append(ratio)
     output["aspect_ratios"] = frozen
+    output["subtitle_mode"] = subtitle_mode
     production["workflow"] = {
         "name": WORKFLOW_NAME,
         "version": WORKFLOW_VERSION,
         "execution_mode": "local_only" if local_only else "local_reuse",
-        "request": {"variant": variant, "voice_profile": voice_profile, "aspect_ratios": ratios},
+        "request": {"variant": variant, "voice_profile": voice_profile, "aspect_ratios": ratios, "subtitle_mode": subtitle_mode},
         "updated_at": utc_now(),
     }
 
 
-def run_workflow(package: Path, variant: str | None, ratios: list[str], voice_profile: str, local_only: bool, opening_duration: float) -> dict[str, Any]:
+def run_workflow(
+    package: Path,
+    variant: str | None,
+    ratios: list[str],
+    voice_profile: str,
+    local_only: bool,
+    opening_duration: float,
+    subtitle_mode: str | None = None,
+) -> dict[str, Any]:
     started_at = utc_now()
     root = package_root(package)
     production_path = root / "production.json"
@@ -200,9 +217,17 @@ def run_workflow(package: Path, variant: str | None, ratios: list[str], voice_pr
     if any(ratio not in SUPPORTED_ASPECT_RATIOS for ratio in ratios):
         raise WorkflowError("Only 16:9 and 9:16 outputs are supported.")
     ratios = list(dict.fromkeys(ratios))
+    try:
+        selected_subtitle_mode = storyboard.validate_subtitle_mode(
+            subtitle_mode or production.get("output", {}).get("subtitle_mode", "default")
+        )
+    except ValueError as error:
+        raise WorkflowError(str(error)) from error
+    if selected_subtitle_mode == "en-only" and selected_variant == "zh-CN":
+        raise WorkflowError("subtitle_mode=en-only requires an English caption source.")
     article, editorial, artifacts = validate_article(root, production, selected_variant)
     paths = validate_media(root, production, selected_variant, artifacts, local_only)
-    freeze_vertical_request(production, selected_variant, ratios, voice_profile, local_only)
+    freeze_vertical_request(production, selected_variant, ratios, voice_profile, local_only, selected_subtitle_mode)
     write_json(production_path, production)
 
     storyboard_path = root / "storyboard.json"
@@ -210,7 +235,7 @@ def run_workflow(package: Path, variant: str | None, ratios: list[str], voice_pr
     storyboard_data = storyboard.build_storyboard(production_path, questions_path, storyboard_path, opening_duration)
     rendered: list[dict[str, Any]] = []
     for ratio in ratios:
-        output_path, reused = storyboard.render_storyboard(production_path, storyboard_path, ratio, voice_profile)
+        output_path, reused = storyboard.render_storyboard(production_path, storyboard_path, ratio, voice_profile, selected_subtitle_mode)
         rendered.append({"aspect_ratio": ratio, "path": str(output_path.relative_to(root)), "reused": reused})
 
     production = read_json(production_path)
@@ -233,6 +258,7 @@ def run_workflow(package: Path, variant: str | None, ratios: list[str], voice_pr
         "article": {"path": str((root / production.get("article", {}).get("path", "article.json")).relative_to(root)), "headline": article.get("article", {}).get("headline", "")},
         "variant": selected_variant,
         "voice_profile": voice_profile,
+        "subtitle_mode": selected_subtitle_mode,
         "aspect_ratios": ratios,
         "reused_artifacts": sorted(str(path.relative_to(root)) for path in paths.values()),
         "storyboard": str(storyboard_path.relative_to(root)),
@@ -244,7 +270,15 @@ def run_workflow(package: Path, variant: str | None, ratios: list[str], voice_pr
     return report
 
 
-def write_blocked_report(package: Path, error: WorkflowError, variant: str | None, ratios: list[str], voice_profile: str, local_only: bool) -> Path | None:
+def write_blocked_report(
+    package: Path,
+    error: WorkflowError,
+    variant: str | None,
+    ratios: list[str],
+    voice_profile: str,
+    local_only: bool,
+    subtitle_mode: str | None,
+) -> Path | None:
     try:
         root = package_root(package)
     except WorkflowError:
@@ -260,6 +294,7 @@ def write_blocked_report(package: Path, error: WorkflowError, variant: str | Non
         "external_api_calls": [],
         "variant": variant,
         "voice_profile": voice_profile,
+        "subtitle_mode": subtitle_mode or "default",
         "aspect_ratios": ratios or ["9:16"],
         "limitations": [str(error)],
     })
@@ -274,16 +309,17 @@ def main() -> int:
     run.add_argument("--variant", choices=tuple(sorted(SUPPORTED_VARIANTS)))
     run.add_argument("--aspect-ratio", choices=tuple(sorted(SUPPORTED_ASPECT_RATIOS)), action="append", dest="ratios")
     run.add_argument("--voice-profile", default="default")
+    run.add_argument("--subtitle-mode", choices=tuple(sorted(SUPPORTED_SUBTITLE_MODES)), default=None)
     run.add_argument("--opening-duration", type=float, default=8.0)
     run.add_argument("--local-only", action="store_true", default=False, help="Never call an external provider; reuse existing media or stop with a report.")
     args = parser.parse_args()
     if args.command == "run":
         try:
-            result = run_workflow(args.package, args.variant, args.ratios or ["9:16"], args.voice_profile, args.local_only, args.opening_duration)
+            result = run_workflow(args.package, args.variant, args.ratios or ["9:16"], args.voice_profile, args.local_only, args.opening_duration, args.subtitle_mode)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         except (OSError, ValueError, WorkflowError) as error:
-            report_path = write_blocked_report(args.package, error, args.variant, args.ratios or ["9:16"], args.voice_profile, args.local_only)
+            report_path = write_blocked_report(args.package, error, args.variant, args.ratios or ["9:16"], args.voice_profile, args.local_only, args.subtitle_mode)
             payload = {"state": "blocked" if isinstance(error, WorkflowBlocked) else "failed", "error": str(error)}
             if report_path:
                 payload["report"] = str(report_path)

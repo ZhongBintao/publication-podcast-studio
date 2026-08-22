@@ -3,6 +3,11 @@
 `storyboard.json` is the only slide-plan input to the renderer. Timed captions
 remain in the canonical SRT; they are not duplicated here.
 
+`production.json.output.subtitle_mode` may be `default` or `en-only`. The
+default mode preserves the variant's normal caption projection. `en-only`
+renders only the approved English caption field for `en` and `en-zh`; it does
+not rewrite the SRT or structured caption cues and is invalid for `zh-CN`.
+
 ```json
 {
   "format": "economist-static-slide-storyboard",

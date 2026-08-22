@@ -14,7 +14,9 @@ translation, captions or article images.
 
 - Verified `article.json`, including `issue_cover.file`.
 - Completed `production.json` with exactly one selected variant and the
-  requested aspect ratio under `output.aspect_ratios`.
+  requested aspect ratio under `output.aspect_ratios`. Optional
+  `output.subtitle_mode` selects `default` or `en-only`; omitted means
+  `default`.
 - The selected final WAV and matching canonical SRT declared in
   `production.artifacts`. For reviewed `en-zh` packages, also consume
   `caption-cues.en-zh.json`, the authoritative language-separated cue payload.
@@ -61,19 +63,27 @@ for any guide-question links supplied by the writing stage. See
 
 ```bash
 "$RUNTIME_PY" skills/economist-static-slide-video/scripts/static_slide_storyboard.py render \
-  OUTPUT/production.json OUTPUT/storyboard.json --aspect-ratio 9:16
+  OUTPUT/production.json OUTPUT/storyboard.json --aspect-ratio 9:16 \
+  --subtitle-mode en-only
 ```
 
 The final artifact is deterministic and addressable at
-`OUTPUT/video/<variant>/<voice-profile>/<aspect-ratio-with-x>/final.mp4`.
-A rerun compares the template, storyboard, audio and SRT hashes and reuses a
-valid final MP4.
+`OUTPUT/video/<variant>/<voice-profile>/<aspect-ratio-with-x>/final.mp4` for
+the default mode, or
+`OUTPUT/video/<variant>/<voice-profile>/en-only/<aspect-ratio-with-x>/final.mp4`
+for English-only captions. A rerun compares the template, storyboard, audio,
+SRT hashes and subtitle mode, and reuses a valid final MP4.
 
 ## Safety and quality gates
 
 - Reject missing audio, captions, article cover, storyboard asset, unsupported
   ratio, invalid cue timeline or non-contiguous slide timing.
 - Structured cue timestamps drive reviewed bilingual caption-frame changes.
+  `subtitle_mode=en-only` is a presentation-only projection of the same
+  approved cue timeline: it renders the English field, structurally skips the
+  Chinese caption layer, and recentres the English block in the full rail. It
+  does not alter the canonical SRT or structured cue payload. This mode is
+  valid for `en` and `en-zh`, but not `zh-CN`.
   `en-zh` renders English above Chinese in one shared centred vertical flow;
   each language independently wraps to complete visual lines. Both ratios use
   a maximum of two lines per language. In the 16:9

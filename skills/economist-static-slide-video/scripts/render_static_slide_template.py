@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 CANVASES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
+SUBTITLE_MODES = {"default", "en-only"}
 PAPER = "#262626"
 LANDSCAPE_PAPER = "#262626"
 INK = "#FFFFFF"
@@ -58,6 +59,13 @@ def read_json(path: Path) -> dict[str, Any]:
 def normalize_caption_text(value: str) -> str:
     """Use a universally covered visual equivalent for fragile dash glyphs."""
     return value.replace("\u2011", "-").replace("\u00ad", "-")
+
+
+def validate_subtitle_mode(value: str) -> str:
+    mode = str(value or "default").strip().lower()
+    if mode not in SUBTITLE_MODES:
+        raise TemplateError(f"Unsupported subtitle mode: {value}")
+    return mode
 
 
 def _supports_text(typeface: ImageFont.FreeTypeFont, value: str) -> bool:
@@ -315,9 +323,18 @@ def audio_duration(audio_path: Path) -> float:
     return duration
 
 
-def render_editorial_frame(article_path: Path, aspect_ratio: str, caption_en: str, caption_zh: str, image_override: str | None = None, media_role: str = "issue_cover") -> Image.Image:
+def render_editorial_frame(
+    article_path: Path,
+    aspect_ratio: str,
+    caption_en: str,
+    caption_zh: str,
+    image_override: str | None = None,
+    media_role: str = "issue_cover",
+    subtitle_mode: str = "default",
+) -> Image.Image:
     if aspect_ratio not in CANVASES:
         raise TemplateError(f"Unsupported aspect ratio: {aspect_ratio}")
+    subtitle_mode = validate_subtitle_mode(subtitle_mode)
     caption_en = normalize_caption_text(caption_en)
     caption_zh = normalize_caption_text(caption_zh)
     package = read_json(article_path)
@@ -364,7 +381,19 @@ def render_editorial_frame(article_path: Path, aspect_ratio: str, caption_en: st
         caption_x, caption_y, caption_width = 54, 1415, 972
         en_max, zh_max = 30, 28
 
-    if aspect_ratio == "16:9":
+    if subtitle_mode == "en-only":
+        en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
+        en_height = glyph_height(draw, en_font)
+        en_gap = max(0, round(en_height * 0.05))
+        total_height = en_height * len(en_lines) + en_gap * max(0, len(en_lines) - 1)
+        if aspect_ratio == "16:9":
+            caption_y = rail_y + max(0, (rail_height - total_height) // 2) - 6
+            draw_caption_lines(canvas, caption_x, caption_y, caption_width, en_lines, en_font, en_gap)
+        else:
+            portrait_rail_y, portrait_rail_height = 1402, 288
+            caption_y = portrait_rail_y + max(0, (portrait_rail_height - total_height) // 2)
+            draw_lines(draw, (caption_x, caption_y), en_lines, en_font, CAPTION, en_gap)
+    elif aspect_ratio == "16:9":
         en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
         zh_font, zh_lines = fitted_text(draw, caption_zh, NOTO_SANS_SC_FONTS, zh_max, 18, caption_width, 2, weight="medium", allow_truncation=False, balance=True)
         en_height = glyph_height(draw, en_font)
@@ -411,9 +440,25 @@ def caption_segments(cues: list[dict[str, Any]], duration: float) -> list[tuple[
     return segments
 
 
-def render_video_frames(article_path: Path, output: Path, aspect_ratio: str, duration: float, caption_en: str, caption_zh: str, image_override: str | None, media_role: str, audio: Path | None = None, captions: Path | None = None, variant: str | None = None) -> None:
+def render_video_frames(
+    article_path: Path,
+    output: Path,
+    aspect_ratio: str,
+    duration: float,
+    caption_en: str,
+    caption_zh: str,
+    image_override: str | None,
+    media_role: str,
+    audio: Path | None = None,
+    captions: Path | None = None,
+    variant: str | None = None,
+    subtitle_mode: str = "default",
+) -> None:
     if duration <= 0:
         raise TemplateError("Video duration must be positive.")
+    subtitle_mode = validate_subtitle_mode(subtitle_mode)
+    if subtitle_mode == "en-only" and variant == "zh-CN":
+        raise TemplateError("subtitle_mode=en-only requires an English caption source.")
     if not shutil.which("ffmpeg"):
         raise TemplateError("ffmpeg is required to render an MP4 preview.")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -426,12 +471,12 @@ def render_video_frames(article_path: Path, output: Path, aspect_ratio: str, dur
                 raise TemplateError("--variant is required when --captions is used.")
             for index, (start, end, cue) in enumerate(caption_segments(cues, duration)):
                 current_en, current_zh = cue_text(cue, variant)
-                frame = render_editorial_frame(article_path, aspect_ratio, current_en, current_zh, image_override, media_role)
+                frame = render_editorial_frame(article_path, aspect_ratio, current_en, current_zh, image_override, media_role, subtitle_mode)
                 path = temporary_path / f"frame-{index:04d}.png"
                 frame.save(path)
                 frame_specs.append((path, end - start))
         else:
-            frame = render_editorial_frame(article_path, aspect_ratio, caption_en, caption_zh, image_override, media_role)
+            frame = render_editorial_frame(article_path, aspect_ratio, caption_en, caption_zh, image_override, media_role, subtitle_mode)
             path = temporary_path / "frame-0000.png"
             frame.save(path)
             frame_specs.append((path, duration))
@@ -461,6 +506,7 @@ def main() -> int:
         command.add_argument("--aspect-ratio", choices=CANVASES, required=True)
         command.add_argument("--caption-en", default="")
         command.add_argument("--caption-zh", default="")
+        command.add_argument("--subtitle-mode", choices=tuple(sorted(SUBTITLE_MODES)), default="default")
         command.add_argument("--image")
         command.add_argument("--media-role", choices=("issue_cover", "article_asset"), default="issue_cover")
         if name == "video":
@@ -472,7 +518,7 @@ def main() -> int:
     try:
         article_path = Path(args.article_json).resolve()
         output = Path(args.output).resolve()
-        frame = render_editorial_frame(article_path, args.aspect_ratio, args.caption_en, args.caption_zh, args.image, args.media_role)
+        frame = render_editorial_frame(article_path, args.aspect_ratio, args.caption_en, args.caption_zh, args.image, args.media_role, args.subtitle_mode)
         if args.command == "preview":
             output.parent.mkdir(parents=True, exist_ok=True)
             frame.save(output)
@@ -486,7 +532,7 @@ def main() -> int:
             captions = Path(args.captions).resolve() if args.captions else None
             if captions and not captions.is_file():
                 raise TemplateError(f"Captions are missing: {captions}")
-            render_video_frames(article_path, output, args.aspect_ratio, duration, args.caption_en, args.caption_zh, args.image, args.media_role, audio, captions, args.variant)
+            render_video_frames(article_path, output, args.aspect_ratio, duration, args.caption_en, args.caption_zh, args.image, args.media_role, audio, captions, args.variant, args.subtitle_mode)
         print(json.dumps({"status": "complete", "output": str(output), "aspect_ratio": args.aspect_ratio, "media_role": args.media_role}, ensure_ascii=False))
         return 0
     except subprocess.CalledProcessError as error:

@@ -45,6 +45,15 @@ class EconomistStaticSlideVideoTests(unittest.TestCase):
             self.assertEqual(landscape.getpixel((1110, 45)), (255, 255, 255))
             self.assertEqual(portrait.getpixel((173, 80)), (255, 255, 255))
 
+    def test_english_only_frame_renders_both_aspect_ratios_without_chinese_caption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            article = self.make_article(Path(temporary))
+            for aspect_ratio in ("16:9", "9:16"):
+                frame = MODULE.render_editorial_frame(
+                    article, aspect_ratio, "English caption.", "中文字幕。", subtitle_mode="en-only"
+                )
+                self.assertEqual(frame.size, MODULE.CANVASES[aspect_ratio])
+
     def test_historical_article_requires_explicit_cover_override(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

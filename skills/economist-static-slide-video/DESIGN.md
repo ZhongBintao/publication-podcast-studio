@@ -29,6 +29,10 @@ permitted.
 - Chinese utility and captions: Noto Sans SC; landscape captions use the Medium
   variable-font instance.
 - Captions use zero letter spacing, centred alignment and no text justification.
+  The renderer supports presentation-only `subtitle_mode=en-only` for English
+  and bilingual audio products: the Chinese caption layer is not drawn and the
+  English block is vertically centred in the complete caption rail. The default
+  mode remains bilingual for `en-zh`.
   In landscape, English and Chinese form one shared vertical flow with 105%
   intra-language line spacing, explicit vertical text insets for descenders and
   a fixed 6 px inter-language gap. Long cues use balanced two-line wrapping and
