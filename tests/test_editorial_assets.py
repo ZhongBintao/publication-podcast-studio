@@ -125,6 +125,20 @@ class EditorialAssetsTests(unittest.TestCase):
                 self.assertTrue(all(not MODULE.rect_overlap(tuple(item["bbox"]), tuple(output["issue_cover_bbox"])) for item in output["line_layout"]))
                 self.assertIn("safe_regions", output)
 
+    def test_finalise_can_render_only_confirmed_aspect_ratio(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            article_path, draft_path, production = self.make_package(root)
+            result = MODULE.finalise(
+                article_path, draft_path, root / "editorial-assets.json", production, aspect_ratios=["9:16"]
+            )
+            self.assertEqual(set(result["cover_art"]["outputs"]), {"9:16"})
+            self.assertTrue((root / "release" / "covers" / "cover-9x16.png").is_file())
+            self.assertFalse((root / "release" / "covers" / "cover-16x9.png").exists())
+            publish_copy = (root / "publish-copy.md").read_text(encoding="utf-8")
+            self.assertIn("竖屏：release/covers/cover-9x16.png", publish_copy)
+            self.assertNotIn("横屏：", publish_copy)
+
     def test_validator_rejects_shallow_questions_and_duplicate_cover_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             article_path, draft_path, _ = self.make_package(Path(temporary))

@@ -494,9 +494,15 @@ def publish_markdown(assets: dict[str, Any]) -> str:
     if not issue_lines:
         issue_lines = [f"- {issue.get('reason', 'unavailable')}" ]
     covers = assets["cover_art"]["outputs"]
+    cover_lines = []
+    for ratio in ("16:9", "9:16"):
+        output = covers.get(ratio)
+        if output:
+            label = "横屏" if ratio == "16:9" else "竖屏"
+            cover_lines.append(f"- {label}：{output['path']}")
     return "\n".join([
         "# 发布素材", "", "## 标题", "", assets["publication"]["title_zh"], "", "## 简介", "", assets["publication"]["description_zh"], "", "## 封面刊号类信息", "",
-        *issue_lines, "", "## 发布封面", "", f"- 横屏：{covers['16:9']['path']}", f"- 竖屏：{covers['9:16']['path']}", "",
+        *issue_lines, "", "## 发布封面", "", *cover_lines, "",
     ])
 
 
@@ -518,6 +524,7 @@ def finalise(
     assets_path: Path,
     production_path: Path | None = None,
     publication_variant: str = "en-zh",
+    aspect_ratios: list[str] | None = None,
 ) -> dict[str, Any]:
     article, paragraphs = load_article(article_path)
     payload = validate_draft(article, paragraphs, read_json(draft_path), publication_variant)
@@ -525,10 +532,19 @@ def finalise(
     cover_ref = article.get("issue_cover", {}).get("file")
     if not isinstance(cover_ref, str):
         raise EditorialAssetsError("article.json needs issue_cover.file.")
+    if aspect_ratios is None and production_path:
+        production = read_json(production_path)
+        request = production.get("workflow", {}).get("request", {})
+        configured = request.get("aspect_ratios") or production.get("output", {}).get("aspect_ratios")
+        if isinstance(configured, list) and configured:
+            aspect_ratios = configured
+    selected_ratios = list(dict.fromkeys(aspect_ratios or ["16:9", "9:16"]))
+    if not selected_ratios or any(ratio not in {"16:9", "9:16"} for ratio in selected_ratios):
+        raise EditorialAssetsError("Editorial cover aspect ratios must be 16:9 and/or 9:16.")
     issue_info = extract_cover_issue_info((root / cover_ref).resolve())
     cover_outputs = {
         ratio: render_cover(article, root, payload, ratio, root / "release" / "covers" / f"cover-{ratio.replace(':', 'x')}.png")
-        for ratio in ("16:9", "9:16")
+        for ratio in selected_ratios
     }
     assets = {
         "format": EDITORIAL_FORMAT,
@@ -564,6 +580,7 @@ def main() -> int:
     finalise_parser.add_argument("draft", type=Path)
     finalise_parser.add_argument("assets", type=Path)
     finalise_parser.add_argument("--production", type=Path)
+    finalise_parser.add_argument("--aspect-ratio", choices=("16:9", "9:16"), action="append", dest="aspect_ratios")
     finalise_parser.add_argument("--variant", choices=tuple(sorted(TITLE_SUFFIXES)), default="en-zh")
     validate = commands.add_parser("validate-editorial", help="Validate an editorial draft without writing assets.")
     validate.add_argument("article", type=Path)
@@ -578,7 +595,7 @@ def main() -> int:
             validate_draft(article, paragraphs, read_json(args.draft), args.variant)
             print(json.dumps({"status": "valid"}, ensure_ascii=False))
         else:
-            assets = finalise(args.article, args.draft, args.assets, args.production, args.variant)
+            assets = finalise(args.article, args.draft, args.assets, args.production, args.variant, args.aspect_ratios)
             print(json.dumps({"status": "created", "editorial_assets": str(args.assets.resolve()), "cover_outputs": assets["cover_art"]["outputs"]}, ensure_ascii=False))
     except (OSError, EditorialAssetsError, ValueError, json.JSONDecodeError) as error:
         print(json.dumps({"status": "failed", "reason": str(error)}, ensure_ascii=False), file=sys.stderr)

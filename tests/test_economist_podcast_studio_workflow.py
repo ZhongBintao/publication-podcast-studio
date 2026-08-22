@@ -15,7 +15,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
-    def make_package(self, root: Path, *, with_media: bool = True) -> None:
+    def make_package(self, root: Path, *, with_media: bool = True, all_products: bool = False) -> None:
         assets = root / "assets"
         audio_dir = root / "audio" / "en"
         assets.mkdir()
@@ -46,6 +46,18 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
         }
         (root / "script.en.json").write_text("[]", encoding="utf-8")
         (root / "subtitle-script.en-zh.json").write_text("{}", encoding="utf-8")
+        if all_products:
+            zh_audio_dir = root / "audio" / "zh-CN"
+            zh_audio_dir.mkdir(parents=True)
+            artifacts.update({
+                "script_zh_cn": "script.zh-CN.json",
+                "audio_zh_cn": "audio/zh-CN/final.wav",
+                "captions_zh_cn_srt": "captions.zh-CN.srt",
+                "captions_zh_cn_vtt": "captions.zh-CN.vtt",
+                "captions_en_srt": "captions.en.srt",
+                "captions_en_vtt": "captions.en.vtt",
+            })
+            (root / "script.zh-CN.json").write_text("[]", encoding="utf-8")
         if with_media:
             with wave.open(str(audio_dir / "final.wav"), "wb") as wav:
                 wav.setnchannels(1)
@@ -64,6 +76,24 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
                     {"start_seconds": 1, "end_seconds": 2, "en_text": "Another complete sentence.", "zh_text": "另一条完整的句子。"},
                 ],
             }), encoding="utf-8")
+            if all_products:
+                with wave.open(str(root / "audio" / "zh-CN" / "final.wav"), "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(48000)
+                    wav.writeframes(b"\0\0" * 48000 * 2)
+                (root / "captions.en.srt").write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\nAn English sentence.\n\n", encoding="utf-8"
+                )
+                (root / "captions.en.vtt").write_text(
+                    "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAn English sentence.\n", encoding="utf-8"
+                )
+                (root / "captions.zh-CN.srt").write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\n一条中文句子。\n\n", encoding="utf-8"
+                )
+                (root / "captions.zh-CN.vtt").write_text(
+                    "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n一条中文句子。\n", encoding="utf-8"
+                )
         (root / "production.json").write_text(json.dumps({
             "state": "complete",
             "variant": "en-zh",
@@ -101,6 +131,42 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             production = json.loads((root / "production.json").read_text())
             self.assertEqual(production["output"]["subtitle_mode"], "en-only")
             self.assertEqual(production["workflow"]["request"]["subtitle_mode"], "en-only")
+
+    def test_confirmed_product_matrix_renders_each_product_and_ratio(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root, all_products=True)
+            report = MODULE.run_workflow(
+                root, None, ["9:16", "16:9"], "default", True, 1.0,
+                products=["en-zh", "en", "zh-CN"], confirmed=True,
+            )
+            self.assertEqual(report["products"], ["en-zh", "en", "zh-CN"])
+            self.assertEqual(len(report["outputs"]), 6)
+            for product in report["products"]:
+                for ratio in ("9x16", "16x9"):
+                    self.assertTrue((root / "video" / product / "default" / ratio / "final.mp4").is_file())
+            production = json.loads((root / "production.json").read_text())
+            self.assertEqual(production["workflow"]["request"]["products"], ["en-zh", "en", "zh-CN"])
+            self.assertEqual(set(production["workflow"]["storyboards"]), {"en-zh", "en", "zh-CN"})
+
+    def test_unconfirmed_product_matrix_has_no_side_effect(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            before = (root / "production.json").read_text()
+            with self.assertRaisesRegex(MODULE.WorkflowBlocked, "confirmed production request"):
+                MODULE.run_workflow(root, None, ["9:16"], "default", True, 1.0, products=["en-zh"])
+            self.assertEqual((root / "production.json").read_text(), before)
+
+    def test_confirmed_product_interface_does_not_expose_internal_subtitle_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            with self.assertRaisesRegex(MODULE.WorkflowError, "internal compatibility option"):
+                MODULE.run_workflow(
+                    root, None, ["9:16"], "default", True, 1.0,
+                    subtitle_mode="en-only", products=["en-zh"], confirmed=True,
+                )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,29 @@ This is the top-level entrypoint for one frozen article production request. It
 coordinates the existing extraction, writing, media and static-slide stages;
 it does not replace their artifact contracts.
 
+## Required startup confirmation
+
+Before any article extraction, script generation, Azure request, caption build
+or video render, confirm the complete production request with the user in the
+Codex conversation. Present these multi-select choices:
+
+- `中文播客`: Chinese audio with Chinese captions (`zh-CN`).
+- `英文播客`: English audio with English captions (`en`).
+- `中英字幕`: English audio with reviewed bilingual captions (`en-zh`).
+- Aspect ratios: `9:16` and/or `16:9`.
+
+Chinese captions are included in the Chinese podcast choice. Do not present
+`仅英文字幕` as a separate user-facing product: it is the same visible
+English-audio/English-caption output as `英文播客` in the current renderer.
+Titles and descriptions are always part of the confirmed request. Generate a
+release cover only for each selected aspect ratio; when both ratios are
+selected, produce both matching covers.
+
+Show the selected products, ratios, mandatory title/description output and
+matching cover outputs in one summary. Do not begin any production stage until
+the user explicitly confirms. If the user changes a choice, show the revised
+summary; if the user cancels, stop without changing production state.
+
 The default output is the approved 9:16 vertical template. A run may also
 request 16:9 for comparison, but the vertical output is the canonical current
 layout. The portrait renderer uses a contained image slot, reduced metadata,
@@ -32,6 +55,14 @@ reviewed captions, existing WAV audio and editorial assets; it then rebuilds
 the two-state storyboard if needed and renders MP4 locally with ffmpeg. It
 never calls Azure Speech, a translation provider, an image service or a
 language model.
+
+After confirmation, the workflow may execute more than one selected product.
+It maps the choices to the existing `en`, `en-zh` and `zh-CN` stage contracts,
+reuses the shared English script/audio for the two English products, and writes
+an independent output for every product × aspect-ratio combination. The
+Python entrypoint accepts repeated `--product` values and requires
+`--confirmed` for this new matrix interface; the legacy single `--variant`
+interface remains supported.
 
 If canonical audio or aligned captions are missing, the workflow stops at the
 media stage and writes a report naming the exact missing artifact. The current
