@@ -5,7 +5,8 @@ description: Produce exactly one selected Economist podcast audio and subtitle v
 
 # Economist Azure Speech Media
 
-Run this skill after `economist-source-to-podcast-script`. The selected
+Run this skill after the selected source-to-podcast writing skill, including
+`economist-chinese-source-to-podcast-script` for `zh-CN`. The selected
 `production.json` variant is the only source of truth; never synthesize an
 unselected language or caption variant.
 
@@ -44,6 +45,10 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
 - `en`: synthesizes `script.en.json`, records Azure WordBoundary alignment, and
   writes `audio/en/final.wav`, `alignment.en.json`, `captions.en.srt`, and
   `captions.en.vtt`.
+- English `opening` and `closing` segments are accepted around the usual body
+  kinds. They use the same ordered TTS, WordBoundary, alignment and caption
+  timeline. Their source links may be empty only for generic programme framing;
+  English body segments still require exactly one source paragraph.
 - `en-zh`: synthesizes the same English script and projects the reviewed,
   source-linked, captionable-unit `subtitle-script.en-zh.json` onto English
   WordBoundary timing.
@@ -58,6 +63,13 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
 - `zh-CN`: synthesizes `script.zh-CN.json`, records WordBoundary alignment, and
   writes `audio/zh-CN/final.wav`, `alignment.zh-CN.json`,
   `captions.zh-CN.srt`, and `captions.zh-CN.vtt`.
+
+Chinese scripts may contain `opening` and `closing` segments around the usual
+source-linked body kinds. They are synthesized in the same ordered segment
+loop, routed through the configured primary/secondary voices, and included in
+the same alignment and caption timeline. Body segments still require one
+source paragraph; wrapper source links may be empty only for generic programme
+framing.
 
 The adapter XML-escapes each frozen segment and builds SSML in memory with the
 Python Speech SDK's `speak_ssml_async` API. Segment WAVs and WordBoundary
@@ -137,6 +149,14 @@ parameters and the configured structure; they reject `express-as` and prosody
 controls. Legacy string voice configuration and non-DragonHD delivery controls
 remain supported. Voice name, voice parameters and delivery settings are all in
 the segment fingerprint, so a change rebuilds only affected audio and timing.
+
+Chinese defaults use structured DragonHD voice configuration: Xiaochen is the
+`primary` host with `zh-CN-Xiaochen:DragonHDLatestNeural`, and Yunxiao is the
+`secondary` host with `zh-CN-Yunxiao:DragonHDFlashLatestNeural`. Both use
+`parameters.temperature: 1.0`. Their Azure voice IDs may be retained in
+`production.json` as audit metadata, but only the voice name and supported
+parameters are sent to SSML. DragonHD and DragonHD Flash accept a temperature
+from 0 to 1; this skill does not send Dragon HD Omni-only parameters.
 
 If a required WordBoundary is missing, offsets are non-monotonic, translation
 phrases are empty, or cues overlap, the selected run becomes `failed` and no

@@ -14,6 +14,7 @@ from PIL import Image
 ROOT = Path(__file__).parents[1]
 MEDIA_PATH = ROOT / "skills" / "economist-azure-speech-media" / "scripts" / "azure_speech_media.py"
 SOURCE_PATH = ROOT / "skills" / "economist-source-to-podcast-script" / "scripts" / "source_to_podcast_script.py"
+CHINESE_PATH = ROOT / "skills" / "economist-chinese-source-to-podcast-script" / "scripts" / "chinese_source_to_podcast_script.py"
 
 MEDIA_SPEC = importlib.util.spec_from_file_location("azure_speech_media", MEDIA_PATH)
 MEDIA = importlib.util.module_from_spec(MEDIA_SPEC)
@@ -21,6 +22,9 @@ MEDIA_SPEC.loader.exec_module(MEDIA)
 SOURCE_SPEC = importlib.util.spec_from_file_location("source_to_podcast_script_for_media", SOURCE_PATH)
 SOURCE = importlib.util.module_from_spec(SOURCE_SPEC)
 SOURCE_SPEC.loader.exec_module(SOURCE)
+CHINESE_SPEC = importlib.util.spec_from_file_location("chinese_source_to_podcast_script_for_media", CHINESE_PATH)
+CHINESE = importlib.util.module_from_spec(CHINESE_SPEC)
+CHINESE_SPEC.loader.exec_module(CHINESE)
 
 
 def wav_bytes(duration_seconds):
@@ -150,6 +154,58 @@ class AzureSpeechMediaTests(unittest.TestCase):
             self.assertEqual(provider.synthesis_calls[1][1], "en-US-Andrew:DragonHDLatestNeural")
             self.assertEqual(provider.synthesis_calls[1][4], {"temperature": 1.0})
 
+    def test_default_chinese_hosts_use_selected_dragonhd_voices_and_parameters(self):
+        temp, root, production_path = self.make_package("zh-CN")
+        with temp:
+            provider = FakeAzureProvider()
+            MEDIA.run_media(production_path, provider)
+            self.assertEqual(
+                [(call[1], call[4]) for call in provider.synthesis_calls],
+                [
+                    ("zh-CN-Xiaochen:DragonHDLatestNeural", {"temperature": 1.0}),
+                    ("zh-CN-Yunxiao:DragonHDFlashLatestNeural", {"temperature": 1.0}),
+                ],
+            )
+            self.assertTrue((root / "alignment.zh-CN.json").exists())
+            self.assertTrue((root / "captions.zh-CN.srt").exists())
+
+    def test_chinese_temperature_change_invalidates_only_the_affected_host_segment(self):
+        temp, root, production_path = self.make_package("zh-CN")
+        with temp:
+            provider = FakeAzureProvider()
+            MEDIA.run_media(production_path, provider)
+            initial_calls = len(provider.synthesis_calls)
+            production = json.loads(production_path.read_text(encoding="utf-8"))
+            production["speech"]["voices"]["zh-CN"]["secondary"]["parameters"]["temperature"] = 0.8
+            production_path.write_text(json.dumps(production), encoding="utf-8")
+            MEDIA.run_media(production_path, provider)
+            self.assertEqual(len(provider.synthesis_calls), initial_calls + 1)
+            self.assertEqual(provider.synthesis_calls[-1][1], "zh-CN-Yunxiao:DragonHDFlashLatestNeural")
+            self.assertEqual(provider.synthesis_calls[-1][4], {"temperature": 0.8})
+
+    def test_english_opening_and_closing_share_tts_alignment_and_captions(self):
+        temp, root, production_path = self.make_package("en")
+        with temp:
+            article = json.loads((root / "article.json").read_text(encoding="utf-8"))
+            candidate = {
+                "opening": [{"segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening", "spoken_text": "Welcome to the story.", "source_paragraph_ids": []}],
+                "body": SOURCE.build_english(article["paragraphs"]),
+                "closing": [{"segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing", "spoken_text": "Thanks for listening.", "source_paragraph_ids": []}],
+            }
+            script = SOURCE.finalize_english(article["paragraphs"], candidate)
+            (root / "script.en.json").write_text(json.dumps(script), encoding="utf-8")
+            provider = FakeAzureProvider()
+            MEDIA.run_media(production_path, provider)
+            self.assertEqual([call[2] for call in provider.synthesis_calls], [
+                "Welcome to the story.", "First source paragraph.", "Second source paragraph.", "Thanks for listening.",
+            ])
+            alignment = json.loads((root / "alignment.en.json").read_text(encoding="utf-8"))
+            self.assertEqual(alignment["segments"][0]["kind"], "opening")
+            self.assertEqual(alignment["segments"][-1]["kind"], "closing")
+            captions = (root / "captions.en.srt").read_text(encoding="utf-8")
+            self.assertIn("Welcome to the story.", captions)
+            self.assertIn("Thanks for listening.", captions)
+
     def test_bilingual_variant_uses_one_translation_session_and_two_line_cues(self):
         temp, root, production_path = self.make_package("en-zh")
         with temp:
@@ -246,6 +302,29 @@ class AzureSpeechMediaTests(unittest.TestCase):
             self.assertTrue((root / "captions.zh-CN.vtt").exists())
             self.assertFalse((root / "audio/en/final.wav").exists())
 
+    def test_chinese_opening_and_closing_share_tts_alignment_and_captions(self):
+        temp, root, production_path = self.make_package("zh-CN")
+        with temp:
+            article = json.loads((root / "article.json").read_text(encoding="utf-8"))
+            candidate = {
+                "opening": [{"segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening", "spoken_text": "欢迎收听今天的节目。", "source_paragraph_ids": []}],
+                "body": [
+                    {"segment_id": "body-1", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "第一段。", "source_paragraph_ids": ["p001"]},
+                    {"segment_id": "body-2", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "第二段。", "source_paragraph_ids": ["p002"]},
+                ],
+                "closing": [{"segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing", "spoken_text": "今天就聊到这里，谢谢收听。", "source_paragraph_ids": []}],
+            }
+            (root / "script.zh-CN.json").write_text(json.dumps(CHINESE.finalize_chinese(article["paragraphs"], candidate), ensure_ascii=False), encoding="utf-8")
+            provider = FakeAzureProvider()
+            MEDIA.run_media(production_path, provider)
+            self.assertEqual([call[2] for call in provider.synthesis_calls], ["欢迎收听今天的节目。", "第一段。", "第二段。", "今天就聊到这里，谢谢收听。"])
+            alignment = json.loads((root / "alignment.zh-CN.json").read_text(encoding="utf-8"))
+            self.assertEqual(alignment["segments"][0]["kind"], "opening")
+            self.assertEqual(alignment["segments"][-1]["kind"], "closing")
+            self.assertLess(alignment["segments"][0]["end_seconds"], alignment["segments"][-1]["start_seconds"])
+            self.assertIn("欢迎收听今天的节目。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
+            self.assertIn("今天就聊到这里，谢谢收听。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
+
     def test_missing_word_boundaries_fails_without_translation(self):
         temp, root, production_path = self.make_package("en")
         with temp:
@@ -329,6 +408,35 @@ class AzureSpeechMediaTests(unittest.TestCase):
         )
         self.assertIn('parameters="temperature=1"', andrew_ssml)
         self.assertNotIn("<prosody", andrew_ssml)
+        yunxiao_ssml, _, _ = MEDIA.build_ssml(
+            "zh-CN",
+            "zh-CN-Yunxiao:DragonHDFlashLatestNeural",
+            "你好，欢迎收听。",
+            {"structure": "none"},
+            {"temperature": 1.0},
+        )
+        self.assertIn('xml:lang="zh-CN"', yunxiao_ssml)
+        self.assertIn('parameters="temperature=1"', yunxiao_ssml)
+        self.assertNotIn("mstts:", yunxiao_ssml)
+        self.assertNotIn("<prosody", yunxiao_ssml)
+
+    def test_dragonhd_flash_configuration_accepts_audit_id(self):
+        self.assertTrue(MEDIA.is_dragon_hd_voice("zh-CN-Xiaochen:DragonHDLatestNeural"))
+        self.assertTrue(MEDIA.is_dragon_hd_voice("zh-CN-Yunxiao:DragonHDFlashLatestNeural"))
+        self.assertEqual(
+            MEDIA.normalise_voice_configuration(
+                {
+                    "id": "d4182cbc-7818-4a96-9a95-d5c2bdf05bae",
+                    "name": "zh-CN-Yunxiao:DragonHDFlashLatestNeural",
+                    "parameters": {"temperature": 1},
+                }
+            ),
+            {
+                "id": "d4182cbc-7818-4a96-9a95-d5c2bdf05bae",
+                "name": "zh-CN-Yunxiao:DragonHDFlashLatestNeural",
+                "parameters": {"temperature": 1.0},
+            },
+        )
 
     def test_non_monotonic_translation_fails_and_records_no_secret(self):
         temp, root, production_path = self.make_package("en-zh")

@@ -31,6 +31,10 @@ from background_music import BackgroundMusicError, add_background_music, default
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_ENV_FILE = WORKSPACE_ROOT / ".env"
 SCRIPT_FIELDS = {"segment_id", "speaker_id", "kind", "spoken_text", "source_paragraph_ids"}
+CHINESE_BODY_KINDS = {"verbatim", "sentence_split", "reaction", "prompt"}
+CHINESE_WRAPPER_KINDS = {"opening", "closing"}
+ENGLISH_BODY_KINDS = {"verbatim", "sentence_split", "reaction", "prompt"}
+ENGLISH_WRAPPER_KINDS = {"opening", "closing"}
 VARIANTS = {"en", "en-zh", "zh-CN"}
 TICKS_PER_SECOND = 10_000_000
 MIN_CUE_SECONDS = 1.5
@@ -157,12 +161,15 @@ _RATE_RE = re.compile(r"(?:[+-]?\d+(?:\.\d+)?%|(?:0\.[5-9]\d*|1(?:\.\d+)?|2(?:\.
 _PITCH_RE = re.compile(r"(?:[+-]?\d+(?:\.\d+)?(?:Hz|st|%)|\d+(?:\.\d+)?Hz|x-low|low|medium|high|x-high)")
 _VOLUME_RE = re.compile(r"(?:[+-]?\d+(?:\.\d+)?(?:%|)|silent|x-soft|soft|medium|loud|x-loud)")
 _CONTOUR_RE = re.compile(r"\(\d+(?:\.\d+)?%,[+-]?\d+(?:\.\d+)?(?:Hz|st|%)\)(?:\s+\(\d+(?:\.\d+)?%,[+-]?\d+(?:\.\d+)?(?:Hz|st|%)\))*")
-DRAGON_HD_SUFFIX = ":dragonhdlatestneural"
+DRAGON_HD_SUFFIXES = (
+    ":dragonhdlatestneural",
+    ":dragonhdflashlatestneural",
+)
 DRAGON_HD_PARAMETER_NAMES = {"temperature"}
 
 
 def is_dragon_hd_voice(voice: str) -> bool:
-    return voice.casefold().endswith(DRAGON_HD_SUFFIX)
+    return voice.casefold().endswith(DRAGON_HD_SUFFIXES)
 
 
 def format_ssml_parameter(value: float) -> str:
@@ -190,13 +197,19 @@ def normalise_voice_configuration(value: Any) -> dict[str, Any]:
     """Accept legacy voice strings and the structured DragonHD voice contract."""
     if isinstance(value, str) and value.strip():
         return {"name": value.strip(), "parameters": {}}
-    if not isinstance(value, dict) or set(value) - {"name", "parameters"}:
-        raise MediaError("Voice configuration must be a voice name or an object with name and parameters.")
+    if not isinstance(value, dict) or set(value) - {"id", "name", "parameters"}:
+        raise MediaError("Voice configuration must be a voice name or an object with id, name and parameters.")
     name = value.get("name")
     if not isinstance(name, str) or not name.strip():
         raise MediaError("Voice configuration needs a non-empty name.")
     name = name.strip()
-    return {"name": name, "parameters": normalise_voice_parameters(name, value.get("parameters", {}))}
+    voice_id = value.get("id")
+    if voice_id is not None and (not isinstance(voice_id, str) or not voice_id.strip()):
+        raise MediaError("Voice configuration id must be a non-empty string when provided.")
+    normalized = {"name": name, "parameters": normalise_voice_parameters(name, value.get("parameters", {}))}
+    if voice_id is not None:
+        normalized["id"] = voice_id.strip()
+    return normalized
 
 
 def validate_delivery(delivery: Any, voice: str | None = None) -> dict[str, Any]:
@@ -270,6 +283,36 @@ def validate_script(value: Any, language: str) -> list[dict[str, Any]]:
             raise MediaError("Selected script has non-consecutive segment IDs.")
         if not isinstance(segment["spoken_text"], str) or not segment["spoken_text"].strip():
             raise MediaError("Selected script has an empty spoken segment.")
+        if not isinstance(segment["source_paragraph_ids"], list):
+            raise MediaError("Selected script source_paragraph_ids must be an array.")
+        if language == "zh-CN":
+            kind = segment["kind"]
+            if kind not in CHINESE_BODY_KINDS | CHINESE_WRAPPER_KINDS:
+                raise MediaError("Selected Chinese script contains an unsupported segment kind.")
+            if kind in CHINESE_BODY_KINDS and len(segment["source_paragraph_ids"]) != 1:
+                raise MediaError("Chinese body segments must reference exactly one source paragraph.")
+        else:
+            kind = segment["kind"]
+            if kind not in ENGLISH_BODY_KINDS | ENGLISH_WRAPPER_KINDS:
+                raise MediaError("Selected English script contains an unsupported segment kind.")
+            if kind in ENGLISH_BODY_KINDS and len(segment["source_paragraph_ids"]) != 1:
+                raise MediaError("English body segments must reference exactly one source paragraph.")
+    if language == "en":
+        opening_end = 0
+        while opening_end < len(value) and value[opening_end]["kind"] == "opening":
+            opening_end += 1
+        closing_start = len(value)
+        while closing_start > opening_end and value[closing_start - 1]["kind"] == "closing":
+            closing_start -= 1
+        body = value[opening_end:closing_start]
+        if any(segment["kind"] in ENGLISH_WRAPPER_KINDS for segment in body):
+            raise MediaError("English opening and closing segments must surround the body.")
+        if any(segment["kind"] == "opening" for segment in value[opening_end:]) or any(
+            segment["kind"] == "closing" for segment in value[:closing_start]
+        ):
+            raise MediaError("English opening and closing segments must surround the body.")
+        if (opening_end > 0) != (closing_start < len(value)):
+            raise MediaError("English scripts with framing must contain both opening and closing sections.")
     return value
 
 
@@ -930,6 +973,7 @@ def run_media(production_path: Path, provider: Any | None = None) -> dict[str, A
             aligned_segments.append({
                 "segment_id": segment["segment_id"],
                 "speaker_id": segment["speaker_id"],
+                "kind": segment["kind"],
                 "source_paragraph_ids": segment["source_paragraph_ids"],
                 "spoken_text": segment["spoken_text"],
                 "start_seconds": round(cumulative, 7),

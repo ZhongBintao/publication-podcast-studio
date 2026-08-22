@@ -30,3 +30,14 @@ class DragonHdLiveSmokeTests(unittest.TestCase):
             result = provider.synthesize("en", voice, "A short DragonHD smoke test.", {"structure": "none"}, parameters)
             self.assertGreater(MEDIA.duration_seconds(result["audio"]), 0)
             self.assertTrue(MEDIA.validate_boundaries("A short DragonHD smoke test.", result["word_boundaries"]))
+
+    def test_selected_chinese_voices_synthesize_with_word_boundaries(self):
+        provider = MEDIA.AzureSpeechProvider(os.environ["AZURE_SPEECH_REGION"])
+        samples = (
+            ("zh-CN-Xiaochen:DragonHDLatestNeural", "小陈主持人测试。"),
+            ("zh-CN-Yunxiao:DragonHDFlashLatestNeural", "云霄主持人测试。"),
+        )
+        for voice, text in samples:
+            result = provider.synthesize("zh-CN", voice, text, {"structure": "none"}, {"temperature": 1.0})
+            self.assertGreater(MEDIA.duration_seconds(result["audio"]), 0)
+            self.assertTrue(MEDIA.validate_boundaries(text, result["word_boundaries"]))
