@@ -156,6 +156,195 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         self.assertEqual(request["paragraphs"][0]["max_caption_unit_chars"], MODULE.MAX_CAPTION_UNIT_CHARS)
         self.assertNotIn("spoken_text", request["paragraphs"][0])
 
+    def test_english_request_freezes_creative_frame_and_seeded_schedule(self):
+        request = MODULE.english_request(self.article, self.paragraphs)
+        self.assertEqual(request["creative_frame"]["enabled"], True)
+        self.assertEqual(request["creative_frame"]["source_policy"], "source_bounded_delivery_only")
+        self.assertEqual(request["creative_frame"]["media_mode"], "audio_and_bilingual_captions")
+        self.assertEqual(request["creative_frame"]["opening"]["max_segments"], 4)
+        self.assertEqual(request["creative_frame"]["closing"]["target_words"], 40)
+        self.assertEqual(request["speaker_schedule"]["mode"], "seeded_constrained_random")
+        self.assertEqual(request["speaker_schedule"]["seed"], MODULE.speaker_seed("source-hash"))
+        self.assertTrue(request["speaker_schedule"]["avoid_mechanical_alternation"])
+
+    def test_finalize_english_places_creative_opening_and_closing_around_body(self):
+        candidate = {
+            "opening": [{
+                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
+                "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
+            }],
+            "body": [
+                {
+                    "segment_id": f"draft-{paragraph['order']}", "speaker_id": MODULE.speaker_for_paragraph(paragraph["order"], len(self.paragraphs)),
+                    "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
+                    "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
+                }
+                for paragraph in self.paragraphs
+            ],
+            "closing": [{
+                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
+                "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
+            }],
+        }
+        result = MODULE.finalize_english(self.paragraphs, candidate)
+        self.assertEqual(result[0]["kind"], "opening")
+        self.assertEqual(result[-1]["kind"], "closing")
+        self.assertEqual(result[0]["source_paragraph_ids"], [])
+        self.assertEqual(result[-1]["source_paragraph_ids"], [])
+        MODULE.validate_coverage(self.paragraphs, result, speaker_policy="english")
+
+    def test_unlinked_english_wrapper_cannot_introduce_source_fact(self):
+        candidate = {
+            "opening": [{
+                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
+                "spoken_text": "In 2025, the market changed.", "source_paragraph_ids": [],
+            }],
+            "body": self.build_body_candidate(),
+            "closing": [{
+                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
+                "spoken_text": "Thanks for listening.", "source_paragraph_ids": [],
+            }],
+        }
+        with self.assertRaisesRegex(ValueError, "Unlinked opening/closing"):
+            MODULE.finalize_english(self.paragraphs, candidate)
+
+    def build_body_candidate(self):
+        return [
+            {
+                "segment_id": f"draft-{paragraph['order']}", "speaker_id": MODULE.speaker_for_paragraph(paragraph["order"], len(self.paragraphs)),
+                "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
+                "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
+            }
+            for paragraph in self.paragraphs
+        ]
+
+    def test_english_allows_a_discourse_marker_outside_the_old_closed_list(self):
+        candidate = self.build_body_candidate()
+        candidate[0]["spoken_text"] = "Frankly, paragraph 1 is in the story."
+        result = MODULE.finalize_english(self.paragraphs, candidate)
+        self.assertEqual(result[0]["spoken_text"], "Frankly, paragraph 1 is in the story.")
+
+    def test_repeated_discourse_markers_are_reported_as_warnings_not_rejected(self):
+        segments = self.build_body_candidate()
+        for index in (0, 2, 4):
+            segments[index]["spoken_text"] = f"Well, paragraph {index + 1} is in the story."
+        warnings = MODULE.english_delivery_warnings(segments)
+        self.assertTrue(any("well" in warning for warning in warnings))
+
+    def test_marker_only_interaction_segment_is_rejected(self):
+        segments = self.build_body_candidate()
+        segments.insert(1, {
+            "segment_id": "marker-reaction", "speaker_id": "secondary", "kind": "reaction",
+            "spoken_text": "Well.", "source_paragraph_ids": ["p001"],
+        })
+        with self.assertRaisesRegex(ValueError, "standalone"):
+            MODULE.finalize_english(self.paragraphs, segments)
+
+    def test_seeded_speaker_schedule_is_reproducible_but_not_fixed_alternation(self):
+        segments = [
+            {"segment_id": f"draft-{index}", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": f"A factual point number {index}.", "source_paragraph_ids": ["p001"]}
+            for index in range(1, 9)
+        ]
+        segments[1]["kind"] = "reaction"
+        segments[1]["spoken_text"] = "That sets the scene."
+        segments[5]["kind"] = "reaction"
+        segments[5]["spoken_text"] = "That changes the picture."
+        first = MODULE.assign_speaker_schedule(segments, 1)
+        repeat = MODULE.assign_speaker_schedule(segments, 1)
+        other = MODULE.assign_speaker_schedule(segments, 2)
+        self.assertEqual([item["speaker_id"] for item in first], [item["speaker_id"] for item in repeat])
+        self.assertNotEqual([item["speaker_id"] for item in first], [item["speaker_id"] for item in other])
+        self.assertLessEqual(max(len(list(group)) for _, group in __import__("itertools").groupby(item["speaker_id"] for item in first)), 4)
+        self.assertFalse(MODULE._mechanically_alternates([item["speaker_id"] for item in first]))
+
+    def test_speaker_seed_uses_policy_version_and_init_can_freeze_explicit_seed(self):
+        expected = int(__import__("hashlib").sha256(b"source-hash:5.2").hexdigest()[:16], 16)
+        self.assertEqual(MODULE.speaker_seed("source-hash"), expected)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            production_path = root / "production.json"
+            article_path.write_text(json.dumps(self.article), encoding="utf-8")
+            MODULE.init_production(article_path, production_path, "en", "region", ["16:9"], 123456789)
+            production = json.loads(production_path.read_text(encoding="utf-8"))
+            self.assertEqual(production["speaker_schedule"], {
+                "mode": "seeded_constrained_random",
+                "seed": 123456789,
+                "max_consecutive_segments": 4,
+                "avoid_mechanical_alternation": True,
+            })
+
+    def test_request_and_validation_use_the_production_frozen_seed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            production_path = root / "production.json"
+            article_path.write_text(json.dumps(self.article), encoding="utf-8")
+            MODULE.init_production(article_path, production_path, "en", "region", ["16:9"], 2468)
+            article, paragraphs = MODULE.load_article(article_path)
+            schedule = MODULE.production_speaker_schedule(article, production_path)
+            request = MODULE.english_request(article, paragraphs, schedule)
+            self.assertEqual(request["speaker_schedule"]["seed"], 2468)
+            final = MODULE.finalize_english(paragraphs, self.build_body_candidate(), 2468)
+            MODULE.validate_frozen_speaker_schedule(article, paragraphs, final, production_path)
+            final[0]["speaker_id"] = MODULE.partner_for_speaker(final[0]["speaker_id"])
+            with self.assertRaisesRegex(ValueError, "frozen production seed"):
+                MODULE.validate_frozen_speaker_schedule(article, paragraphs, final, production_path)
+
+    def test_finalizer_ignores_draft_speaker_ids_and_fixed_wrappers(self):
+        candidate = {
+            "opening": [{
+                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
+                "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
+            }],
+            "body": [
+                {
+                    "segment_id": f"draft-{paragraph['order']}", "speaker_id": "secondary",
+                    "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
+                    "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
+                }
+                for paragraph in self.paragraphs
+            ],
+            "closing": [{
+                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
+                "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
+            }],
+        }
+        first = MODULE.finalize_english(self.paragraphs, candidate, 123)
+        candidate["body"] = [dict(item, speaker_id="primary") for item in candidate["body"]]
+        second = MODULE.finalize_english(self.paragraphs, candidate, 123)
+        self.assertEqual([item["speaker_id"] for item in first], [item["speaker_id"] for item in second])
+        self.assertEqual(first[0]["speaker_id"], "primary")
+        self.assertEqual(first[-1]["speaker_id"], "secondary")
+
+    def test_schedule_enforces_factual_share_and_sliding_alternation_rule(self):
+        segments = [
+            {
+                "segment_id": f"draft-{index}", "speaker_id": "primary", "kind": "sentence_split",
+                "spoken_text": "The source gives this detailed factual point.", "source_paragraph_ids": ["p001"],
+            }
+            for index in range(1, 7)
+        ]
+        scheduled = MODULE.assign_speaker_schedule(segments, 77)
+        report = MODULE.english_speaker_balance(scheduled)
+        self.assertGreaterEqual(report["word_shares"]["primary"], 0.4)
+        self.assertLessEqual(report["word_shares"]["primary"], 0.6)
+        self.assertTrue(MODULE._mechanically_alternates([
+            "primary", "secondary", "primary", "secondary", "primary", "secondary", "primary",
+        ]))
+
+    def test_long_script_without_two_shared_interactions_is_blocked(self):
+        paragraphs = [{"order": index, "text": f"Source fact {index}."} for index in range(1, 9)]
+        candidate = [
+            {
+                "segment_id": f"draft-{index}", "speaker_id": "primary", "kind": "sentence_split",
+                "spoken_text": f"Source fact {index}.", "source_paragraph_ids": [f"p{index:03d}"],
+            }
+            for index in range(1, 9)
+        ]
+        with self.assertRaisesRegex(ValueError, "interactions"):
+            MODULE.finalize_english(paragraphs, candidate, 1)
+
     def test_finalize_english_allows_controlled_fillers_and_contractions(self):
         candidate = [
             {
@@ -284,12 +473,28 @@ class SourceToPodcastScriptTests(unittest.TestCase):
                 self.assertEqual(production["variant"], variant)
                 self.assertEqual(production["languages"], expected_languages)
                 self.assertEqual(set(production["artifacts"]), expected_artifacts)
-                self.assertEqual(production["script_generation"]["policy_version"], "5.1")
+                self.assertEqual(production["script_generation"]["policy_version"], "5.2")
                 self.assertEqual(production["script_generation"]["policy"], "source_bounded_conversational_rewrite")
                 self.assertNotIn("key", json.dumps(production).lower())
             bilingual = json.loads((root / "en-zh.production.json").read_text(encoding="utf-8"))
             self.assertEqual(bilingual["captions"]["provider"], "approved-bilingual-script")
             self.assertEqual(bilingual["captions"]["target_locale"], "zh-Hans")
+            chinese = json.loads((root / "zh-CN.production.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                chinese["speech"]["voices"]["zh-CN"],
+                {
+                    "primary": {
+                        "id": "7ea726c9-9cde-49eb-ad47-e3ab8a49f4b6",
+                        "name": "zh-CN-Xiaochen:DragonHDLatestNeural",
+                        "parameters": {"temperature": 1.0},
+                    },
+                    "secondary": {
+                        "id": "d4182cbc-7818-4a96-9a95-d5c2bdf05bae",
+                        "name": "zh-CN-Yunxiao:DragonHDFlashLatestNeural",
+                        "parameters": {"temperature": 1.0},
+                    },
+                },
+            )
 
     def test_reviewed_subtitle_draft_preserves_complete_sentence_spans_and_source_links(self):
         script = MODULE.build_english(self.paragraphs)

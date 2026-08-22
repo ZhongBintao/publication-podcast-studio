@@ -12,11 +12,12 @@ per-segment SSML in memory and never asks AI to create SSML.
 ## Spoken delivery profile
 
 The spoken script should sound like two well-prepared hosts talking through a
-reported story, not like an article being read aloud. Use the supplied
-reference transcript as a style guide for rhythm: short turns, relaxed
-connectors, occasional emphasis, and natural questions and responses. Recreate
-those delivery qualities without copying its content or inventing a host
-exchange.
+reported story, not like an article being read aloud. The English writing stage
+also creates a short creative opening and closing, both of which are spoken and
+captioned. Use the supplied reference transcript as a style guide for rhythm:
+short turns, relaxed connectors, occasional emphasis, and natural questions and
+responses. Recreate those delivery qualities without copying its content or
+inventing a host exchange.
 
 The style boundary is deliberately narrow:
 
@@ -30,23 +31,44 @@ The style boundary is deliberately narrow:
 - Prefer short, direct clauses. Never use a noun followed by a comma and a
   dangling explanatory phrase. Integrate necessary context into a complete
   spoken clause or use two natural sentences.
-- English may use contractions and a small set of non-factual discourse
-  markers: `well`, `so`, `right`, `you know`, `I mean`, `actually`, `honestly`,
-  `exactly`, `okay`, `look`, `sure`, `of course`, and `basically`. Use them
-  sparingly, usually no more than one short marker every two or three
-  sentences. Never force a filler into every segment or repeat the same one.
+- English may use natural non-factual discourse markers, including markers not
+  listed in this skill. Vary them and use them when they improve spoken flow;
+  the validator must not reject a marker merely because it is outside a closed
+  vocabulary. Do not create filler-only segments, stack the same marker
+  repeatedly, or use markers to conceal missing source content.
 - Chinese may use light spoken connectors such as “其实”“你看”“问题是”“确实”
   and “说白了” when they do not add a new claim. Keep Chinese sentences short,
   natural and read-as-written; do not translate the English fillers literally.
 - English `source_speaker_id` and `partner_speaker_id` are suggested roles, not
   fixed assignments. Both hosts may deliver factual units from one paragraph.
-  Aim for 45--55% of total English words per host and keep normal-length
-  scripts within 40--60%. Avoid more than three consecutive segments by one
-  host. A prompt immediately precedes a factual answer from the other host;
-  reactions remain short, source-linked and free of new claims or viewpoints.
+  The English finaliser applies a saved `seeded_constrained_random` schedule:
+  opening is always `primary`, closing is always `secondary`, and body
+  speakers are selected deterministically from the seed. It keeps factual
+  word share within 40--60% whenever there are at least two factual segments,
+  allows natural runs of two or three segments, caps a run at four segments,
+  and rejects any six-segment mechanical A/B alternation window. A prompt
+  immediately precedes a factual answer from the other host; long scripts
+  with at least eight factual segments need two interactions shared by both
+  hosts. Candidate `speaker_id` values are compatibility hints only.
 
-The validator treats only the approved English markers above as removable
-delivery language. Any other added English content is a source-fidelity error.
+## Creative framing
+
+The production English request returns an object with `opening`, `body` and
+`closing` arrays. Opening and closing segments retain the five-field script
+contract and use `kind` `opening` or `closing`. They may have an empty
+`source_paragraph_ids` array only for generic programme framing such as a
+welcome, listener orientation or sign-off. Any article fact, number, named
+entity, judgment or concrete detail must cite one or more verified source
+paragraph IDs. The opening comes before the body and the closing after it.
+
+New English requests freeze `creative_frame.enabled=true`, the
+`source_bounded_delivery_only` policy, audio-plus-bilingual-caption media mode,
+one-to-four segments per wrapper, and a reproducible speaker seed. Unless a
+production file supplies `speaker_schedule.seed`, the seed is derived as
+`SHA256(source_sha256 + ":" + "5.2")[:16]` interpreted as hexadecimal.
+Opening and closing are synthesized, aligned and included in English and
+`en-zh` captions. Existing body-only 5.0/5.1 packages remain readable without
+regeneration.
 
 ## Workflow
 
@@ -56,19 +78,20 @@ delivery language. Any other added English content is a source-fidelity error.
    ```bash
    RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
    "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py init-production ARTICLE.json production.json \
-     --variant en --region AZURE_REGION --aspect-ratio 9:16
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py english-request ARTICLE.json > english-request.json
+     --variant en --region AZURE_REGION --aspect-ratio 9:16 --speaker-seed 123456789
+   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py english-request ARTICLE.json \
+     --production production.json > english-request.json
    ```
 
-   Have the writing model return only a body-array draft using the supplied
-   `source_paragraph_id`, `source_speaker_id`, `partner_speaker_id`, the
-   supplied speaker-balance parameters, the two character budgets, and the five
-   script fields. Apply the oral
+   Have the writing model return only the framed JSON object using the supplied
+   `source_paragraph_id`, `source_speaker_id`, `partner_speaker_id`, seeded
+   speaker-schedule parameters, creative-frame budgets, and the five script
+   fields. Apply the oral
    delivery profile above, then freeze it with:
 
    ```bash
    "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py finalize-english \
-     ARTICLE.json english-draft.json script.en.json
+     ARTICLE.json english-draft.json script.en.json --production production.json
    ```
 
    If finalisation reports an English speaker-balance failure, make at most one
@@ -114,8 +137,12 @@ delivery language. Any other added English content is a source-fidelity error.
 4. Validate the selected script. For `en` and `en-zh`:
 
    ```bash
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py validate ARTICLE.json script.en.json --language en
+   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py validate ARTICLE.json script.en.json --language en --production production.json
    ```
+
+   Pass `--production production.json` to verify that the final body speaker
+   assignments exactly reproduce the frozen seed. `english-request` and
+   `finalize-english` derive the same seed when `--production` is omitted.
 
    For `zh-CN`:
 
@@ -200,8 +227,11 @@ delivery language. Any other added English content is a source-fidelity error.
   either host, while every unit remains linked to exactly one source paragraph.
 - The English validator checks structure, complete ordered source coverage,
   segment and caption budgets, complete spoken punctuation, prompt/answer
-  alternation, consecutive-turn limits and the 40--60% word-share range for
-  normal-length scripts. It no longer requires lexical source-token equality.
+  alternation, consecutive-turn limits, the 40--60% factual word-share range,
+  and the frozen seeded schedule when a production file is supplied. It no
+  longer requires lexical source-token equality or a closed discourse-marker
+  vocabulary. Marker-only segments fail; repeated markers and filler-heavy
+  delivery are returned as warnings and do not block TTS.
   If balance fails, the diagnostic lists word counts, shares and factual
   segment IDs suitable for one targeted speaker-rebalancing retry. Chinese
   keeps its existing paragraph-level speaker and punctuation rules.
@@ -211,6 +241,10 @@ delivery language. Any other added English content is a source-fidelity error.
   it to Azure separately for every spoken segment. English defaults to
   `en-US-Ava:DragonHDLatestNeural` for `primary` and
   `en-US-Andrew:DragonHDLatestNeural` with `temperature=1` for `secondary`.
+  Chinese defaults to `zh-CN-Xiaochen:DragonHDLatestNeural` for `primary` and
+  `zh-CN-Yunxiao:DragonHDFlashLatestNeural` for `secondary`, both with
+  `temperature=1`. Their UUIDs may be stored as production configuration
+  metadata, but are never placed in scripts or emitted in SSML.
   For `en-zh`, Azure uses English WordBoundary timing to
   project the reviewed subtitle script onto the final audio. Legacy packages
   may retain Azure Speech Translation as a machine-unreviewed compatibility

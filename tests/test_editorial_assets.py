@@ -89,6 +89,23 @@ class EditorialAssetsTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.EditorialAssetsError, "top, middle, bottom"):
                 MODULE.validate_draft(article, paragraphs, draft)
 
+    def test_zh_cn_variant_uses_chinese_only_publication_suffix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            article_path, draft_path, production = self.make_package(Path(temporary))
+            article, paragraphs = MODULE.load_article(article_path)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["publication"]["title_zh"] = "《经济学人》：谁在为未来的科技雄心买单 | 外刊播客 | 中文字幕"
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            result = MODULE.validate_draft(article, paragraphs, draft, "zh-CN")
+            self.assertTrue(result["publication"]["title_zh"].endswith("| 中文字幕"))
+            assets = MODULE.finalise(article_path, draft_path, Path(temporary) / "zh-editorial-assets.json", production, "zh-CN")
+            self.assertEqual(assets["publication_variant"], "zh-CN")
+            self.assertTrue(assets["publication"]["title_zh"].endswith("| 中文字幕"))
+            invalid = json.loads(draft_path.read_text(encoding="utf-8"))
+            invalid["publication"]["title_zh"] = "《经济学人》：谁在为未来的科技雄心买单 | 外刊播客 | 中英字幕"
+            with self.assertRaisesRegex(MODULE.EditorialAssetsError, "fixed Economist"):
+                MODULE.validate_draft(article, paragraphs, invalid, "zh-CN")
+
     def test_release_cover_uses_non_overlapping_safe_regions_for_long_titles(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

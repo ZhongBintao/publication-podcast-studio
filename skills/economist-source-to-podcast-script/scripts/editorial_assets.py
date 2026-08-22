@@ -21,7 +21,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 EDITORIAL_FORMAT = "economist-editorial-assets"
 TITLE_PREFIX = "《经济学人》："
-TITLE_SUFFIX = " | 外刊播客 | 中英字幕"
+TITLE_SUFFIXES = {
+    "en-zh": " | 外刊播客 | 中英字幕",
+    "zh-CN": " | 外刊播客 | 中文字幕",
+}
 MONTHS = "JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER"
 DATE_RE = re.compile(
     rf"\b(?:{MONTHS})\s+\d{{1,2}}(?:ST|ND|RD|TH)?(?:\s*[–—-]\s*\d{{1,2}}(?:ST|ND|RD|TH)?)?(?:\s*,?\s*\d{{4}})\b",
@@ -99,7 +102,14 @@ def all_chinese_text(value: Any, label: str) -> str:
     return value
 
 
-def editorial_request(article_path: Path) -> dict[str, Any]:
+def publication_suffix(publication_variant: str) -> str:
+    try:
+        return TITLE_SUFFIXES[publication_variant]
+    except KeyError as error:
+        raise EditorialAssetsError(f"Unsupported editorial publication variant: {publication_variant}") from error
+
+
+def editorial_request(article_path: Path, publication_variant: str = "en-zh") -> dict[str, Any]:
     article, paragraphs = load_article(article_path)
     return {
         "source_sha256": article["source_sha256"],
@@ -122,7 +132,7 @@ def editorial_request(article_path: Path) -> dict[str, Any]:
                 {"question": "", "translation_zh": "", "source_paragraph_ids": []},
                 {"question": "", "translation_zh": "", "source_paragraph_ids": []},
             ],
-            "publication": {"title_zh": "《经济学人》：… | 外刊播客 | 中英字幕", "description_zh": "", "source_paragraph_ids": []},
+            "publication": {"title_zh": f"{TITLE_PREFIX}…{publication_suffix(publication_variant)}", "description_zh": "", "source_paragraph_ids": []},
             "cover_text": [
                 {"position": "top", "text": "", "source_paragraph_ids": []},
                 {"position": "middle", "text": "", "source_paragraph_ids": []},
@@ -132,7 +142,9 @@ def editorial_request(article_path: Path) -> dict[str, Any]:
     }
 
 
-def validate_draft(article: dict[str, Any], paragraphs: list[dict[str, Any]], draft: Any) -> dict[str, Any]:
+def validate_draft(
+    article: dict[str, Any], paragraphs: list[dict[str, Any]], draft: Any, publication_variant: str = "en-zh"
+) -> dict[str, Any]:
     if not isinstance(draft, dict):
         raise EditorialAssetsError("Editorial draft must be a JSON object.")
     if draft.get("source_sha256") != article["source_sha256"]:
@@ -176,7 +188,8 @@ def validate_draft(article: dict[str, Any], paragraphs: list[dict[str, Any]], dr
     if not isinstance(publication, dict):
         raise EditorialAssetsError("Editorial draft needs publication.")
     title = all_chinese_text(publication.get("title_zh"), "publication.title_zh")
-    if not title.startswith(TITLE_PREFIX) or not title.endswith(TITLE_SUFFIX) or not title[len(TITLE_PREFIX):-len(TITLE_SUFFIX)].strip():
+    title_suffix = publication_suffix(publication_variant)
+    if not title.startswith(TITLE_PREFIX) or not title.endswith(title_suffix) or not title[len(TITLE_PREFIX):-len(title_suffix)].strip():
         raise EditorialAssetsError("Publication title must use the fixed Economist podcast wrapper.")
     result_publication = {
         "title_zh": title,
@@ -499,9 +512,15 @@ def register_production(production_path: Path, assets_path: Path) -> None:
     write_json(production_path, production)
 
 
-def finalise(article_path: Path, draft_path: Path, assets_path: Path, production_path: Path | None = None) -> dict[str, Any]:
+def finalise(
+    article_path: Path,
+    draft_path: Path,
+    assets_path: Path,
+    production_path: Path | None = None,
+    publication_variant: str = "en-zh",
+) -> dict[str, Any]:
     article, paragraphs = load_article(article_path)
-    payload = validate_draft(article, paragraphs, read_json(draft_path))
+    payload = validate_draft(article, paragraphs, read_json(draft_path), publication_variant)
     root = assets_path.parent.resolve()
     cover_ref = article.get("issue_cover", {}).get("file")
     if not isinstance(cover_ref, str):
@@ -514,6 +533,7 @@ def finalise(article_path: Path, draft_path: Path, assets_path: Path, production
     assets = {
         "format": EDITORIAL_FORMAT,
         "schema_version": "1.0.0",
+        "publication_variant": publication_variant,
         "article_source_sha256": article["source_sha256"],
         "display": payload["display"],
         "guide_questions": payload["guide_questions"],
@@ -538,24 +558,27 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     request = commands.add_parser("editorial-request", help="Print a compact, source-linked request for AI editorial copy.")
     request.add_argument("article", type=Path)
+    request.add_argument("--variant", choices=tuple(sorted(TITLE_SUFFIXES)), default="en-zh")
     finalise_parser = commands.add_parser("finalize-editorial", help="Validate an AI editorial draft and write publishing assets.")
     finalise_parser.add_argument("article", type=Path)
     finalise_parser.add_argument("draft", type=Path)
     finalise_parser.add_argument("assets", type=Path)
     finalise_parser.add_argument("--production", type=Path)
+    finalise_parser.add_argument("--variant", choices=tuple(sorted(TITLE_SUFFIXES)), default="en-zh")
     validate = commands.add_parser("validate-editorial", help="Validate an editorial draft without writing assets.")
     validate.add_argument("article", type=Path)
     validate.add_argument("draft", type=Path)
+    validate.add_argument("--variant", choices=tuple(sorted(TITLE_SUFFIXES)), default="en-zh")
     args = parser.parse_args()
     try:
         if args.command == "editorial-request":
-            print(json.dumps(editorial_request(args.article), ensure_ascii=False, indent=2))
+            print(json.dumps(editorial_request(args.article, args.variant), ensure_ascii=False, indent=2))
         elif args.command == "validate-editorial":
             article, paragraphs = load_article(args.article)
-            validate_draft(article, paragraphs, read_json(args.draft))
+            validate_draft(article, paragraphs, read_json(args.draft), args.variant)
             print(json.dumps({"status": "valid"}, ensure_ascii=False))
         else:
-            assets = finalise(args.article, args.draft, args.assets, args.production)
+            assets = finalise(args.article, args.draft, args.assets, args.production, args.variant)
             print(json.dumps({"status": "created", "editorial_assets": str(args.assets.resolve()), "cover_outputs": assets["cover_art"]["outputs"]}, ensure_ascii=False))
     except (OSError, EditorialAssetsError, ValueError, json.JSONDecodeError) as error:
         print(json.dumps({"status": "failed", "reason": str(error)}, ensure_ascii=False), file=sys.stderr)

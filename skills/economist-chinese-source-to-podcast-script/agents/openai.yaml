@@ -1,0 +1,4 @@
+interface:
+  display_name: "Economist Chinese Podcast Writer"
+  short_description: "Write source-linked, natural Chinese Economist podcast scripts"
+  default_prompt: "Use $economist-chinese-source-to-podcast-script to turn a verified Economist article into a faithful, conversational Chinese two-host podcast script and Chinese editorial assets."

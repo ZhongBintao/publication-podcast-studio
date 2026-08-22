@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import random
 import sys
 import unicodedata
 from pathlib import Path
@@ -25,8 +26,9 @@ ALLOWED_FIELDS = {"segment_id", "speaker_id", "kind", "spoken_text", "source_par
 SPEAKERS = {"primary", "secondary"}
 FACTUAL_KINDS = {"verbatim", "sentence_split"}
 INTERACTION_KINDS = {"reaction", "prompt"}
-ALLOWED_KINDS = FACTUAL_KINDS | INTERACTION_KINDS
-BODY_KINDS = ALLOWED_KINDS
+WRAPPER_KINDS = {"opening", "closing"}
+BODY_KINDS = FACTUAL_KINDS | INTERACTION_KINDS
+ALLOWED_KINDS = BODY_KINDS | WRAPPER_KINDS
 VISUAL_REFERENCE = re.compile(
     r"\s*\(\s*(?:see|see also)\s+(?:the\s+)?(?:chart|table|figure|next article|next page)[^)]*\)",
     re.IGNORECASE,
@@ -46,21 +48,27 @@ MAX_CHINESE_CAPTION_CHARS = 48
 MIN_BALANCED_ENGLISH_WORDS = 120
 MIN_INTERACTION_FACTUAL_SEGMENTS = 8
 MIN_INTERACTION_SEGMENTS = 2
-MAX_CONSECUTIVE_ENGLISH_SEGMENTS = 3
+MAX_CONSECUTIVE_ENGLISH_SEGMENTS = 4
 MIN_ENGLISH_WORD_SHARE = 0.40
 MAX_ENGLISH_WORD_SHARE = 0.60
 TARGET_ENGLISH_WORD_SHARE = 0.50
 MAX_REACTION_WORDS = 12
 MAX_PROMPT_WORDS = 16
-APPROVED_ENGLISH_FILLER_TOKENS = {
-    "actually", "basically", "exactly", "honestly", "look", "okay", "right",
-    "so", "sure", "well",
+CREATIVE_FRAME_POLICY = "source_bounded_delivery_only"
+CREATIVE_FRAME_MEDIA_MODE = "audio_and_bilingual_captions"
+CREATIVE_OPENING_TARGET_WORDS = 45
+CREATIVE_CLOSING_TARGET_WORDS = 40
+CREATIVE_MAX_SEGMENTS = 4
+SCRIPT_POLICY_VERSION = "5.2"
+SPEAKER_SCHEDULE_POLICY = "seeded_constrained_random"
+MECHANICAL_ALTERNATION_WINDOW = 6
+UNLINKED_WRAPPER_FACT = re.compile(r"(?:\d|[%$£€¥])")
+# This is deliberately non-exhaustive. It is only a diagnostic hint set; it
+# is never used for source-fidelity matching or to define legal English.
+DISCOURSE_MARKER_HINTS = {
+    "actually", "anyway", "basically", "clearly", "frankly", "honestly", "look",
+    "okay", "right", "seriously", "so", "sure", "well", "ultimately", "you know",
 }
-APPROVED_ENGLISH_FILLER_PHRASES = (
-    ("of", "course"),
-    ("you", "know"),
-    ("i", "mean"),
-)
 CONTRACTION_EXPANSIONS = {
     "can't": ("can", "not"), "cannot": ("can", "not"), "couldn't": ("could", "not"),
     "didn't": ("did", "not"), "doesn't": ("does", "not"), "don't": ("do", "not"),
@@ -78,7 +86,16 @@ CONTRACTION_EXPANSIONS = {
 }
 ENGLISH_STYLE_INSTRUCTIONS = """You are the English writing stage for a source-bounded, two-host Economist podcast.
 
-Turn each supplied verified source paragraph into a natural spoken exchange. The supplied paragraphs define the evidence boundary, not a wording template. The result should sound like two attentive hosts talking through a reported story, never like an article being read aloud.
+Return an engaging programme opening, a source-linked conversational body, and a natural closing. The supplied paragraphs define the evidence boundary, not a wording template. The result should sound like two attentive hosts talking through a reported story, never like an article being read aloud.
+
+CREATIVE OPENING AND CLOSING
+
+- Return only a JSON object with three arrays: opening, body, and closing.
+- Opening segments come first, body segments cover every supplied paragraph in order, and closing segments come last. Each wrapper normally contains one to four short segments.
+- The opening may welcome listeners, frame the central question or tension, and create a reason to keep listening. It must bridge naturally into the first source-linked body segment.
+- The closing may recap the reported arc or source-supported tension, acknowledge what remains unresolved when the source does so, and thank listeners. It must not introduce a new fact, analysis, recommendation, prediction, conclusion, viewpoint, or future promise.
+- A pure programme-framing segment may use an empty source_paragraph_ids array. If opening or closing text states an article fact, number, judgment, named entity, or concrete detail, cite one or more relevant source paragraph IDs.
+- Opening and closing are formal spoken units. They will be synthesized and included in English and bilingual captions.
 
 SOURCE-BOUNDED ADAPTATION
 
@@ -90,18 +107,18 @@ SOURCE-BOUNDED ADAPTATION
 
 HOST ROLES AND BALANCE
 
-- source_speaker_id and partner_speaker_id are suggested host roles for the paragraph, not fixed speaker assignments. Either host may deliver factual units, and one source paragraph may contain factual turns from both hosts.
-- Share substantive narration between primary and secondary. Aim for 45%--55% of total English words per host; stay within 40%--60% for a normal-length script. Do not make one host a question-only or reaction-only voice.
-- Use short turns, natural questions, answers, and responses. Avoid more than three consecutive segments by the same host unless a single idea genuinely needs two adjacent units.
+- source_speaker_id and partner_speaker_id are suggested host roles, not fixed assignments. Use the supplied seeded constrained-random schedule rather than a strict alternating A/B pattern.
+- Share substantive narration between primary and secondary. Aim for 45%--55% of factual English words per host; stay within 40%--60% for a normal-length script. Do not make one host a question-only or reaction-only voice.
+- Use short turns, natural questions, answers, and responses. Runs of two or three adjacent turns by one host are welcome when they sound natural; never exceed the supplied maximum consecutive-segment budget.
 - For a script with at least eight factual segments, include at least two useful interactions and give both hosts an interaction opportunity. Do not insert an interaction after every sentence.
 - A prompt must be spoken by one host and be immediately followed by a factual answer from the other host. A reaction may acknowledge or frame the current source point, but must not add a claim or viewpoint.
 
 ORAL STYLE AND TOPIC PROGRESSION
 
 - Prefer direct verbs, short clauses, contractions, concrete subjects, and natural pauses.
+- Natural English discourse markers are allowed, including markers not listed in this instruction. For example, well, so, right, and other markers may be useful, but this is not a closed vocabulary list. Use markers when they make the exchange sound spoken, and vary them rather than forcing them into every turn. They must not carry facts or disguise a missing sentence.
 - Avoid the written pattern “noun, explanatory phrase;” or “noun, short definition,” especially when it creates a dangling subtitle unit. When context is needed, integrate it into a complete spoken clause or use two natural sentences.
 - Do not stack appositives, parentheticals, nominalisations, or long modifier chains after a noun.
-- Use light markers such as well, so, right, you know, I mean, actually, honestly, exactly, okay, look, sure, of course, and basically sparingly. They must not carry facts or disguise a missing sentence.
 - Keep necessary professional terms, but simplify the surrounding sentence rather than adding an outside definition.
 - Move between source paragraphs with a short source-linked bridge only when it improves listener orientation.
 
@@ -116,18 +133,18 @@ LONG-SENTENCE AND CAPTION ADAPTATION
 
 OUTPUT CONTRACT
 
-Return only a JSON array. Every object must contain exactly: segment_id, speaker_id, kind, spoken_text, and source_paragraph_ids.
+Every object must contain exactly: segment_id, speaker_id, kind, spoken_text, and source_paragraph_ids.
 
-Use these kinds:
+Use opening and closing only in their corresponding wrapper arrays. In body use:
 
 - verbatim: a concise source-bounded factual unit that may still be lightly reworded
 - sentence_split: a source-bounded factual unit created by oralising or splitting a longer written sentence
 - reaction: a short, natural, source-linked response with no new claim or viewpoint
 - prompt: a short, natural, source-linked question that the immediately following factual unit answers
 
-Every segment must reference exactly one supplied paragraph ID. Factual segments may use either speaker. Interaction segments may use either speaker, but a prompt must be followed immediately by a factual segment from the other speaker. Keep reactions to 12 English words or fewer and prompts to 16 English words or fewer. Use normal conversational punctuation and do not end any segment with a comma, colon, dash, or semicolon.
+Every body segment must reference exactly one supplied paragraph ID. Wrapper segments may use an empty list only for generic programme framing; any source-specific claim must cite known paragraph IDs. Keep reactions to 12 English words or fewer and prompts to 16 English words or fewer. Use normal conversational punctuation and do not end any segment with a comma, colon, dash, or semicolon.
 
-Before returning, silently verify: all supplied paragraphs are covered in original order; no unsupported fact or viewpoint has been added; every long sentence has been rewritten into subtitle-safe spoken units; both hosts have substantive opportunities; the word balance is near 50/50 when the script is long enough; no segment exceeds its supplied budget; and the result sounds like a composed two-host conversation."""
+Before returning, silently verify: the opening and closing are present and placed correctly; all supplied paragraphs are covered in original order; no unsupported fact or viewpoint has been added; every long sentence has been rewritten into subtitle-safe spoken units; both hosts have substantive opportunities; the seeded schedule is natural rather than mechanically alternating; the factual word balance is near 50/50 when the script is long enough; no segment exceeds its supplied budget; and the result sounds like a composed two-host conversation."""
 RETRY_INSTRUCTIONS = (
     "Rewrite only these zh-CN source paragraphs. Preserve facts, numbers, attribution and order. "
     "Write natural spoken Chinese: use common Chinese names first, keep a bare English proper name only when it is natural, "
@@ -210,42 +227,6 @@ def chinese_translation_source(text: str) -> str:
 spoken_source = english_spoken_source
 
 
-def lexical_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    for token in re.findall(r"[\w]+(?:[’'][\w]+)?", unicodedata.normalize("NFC", text).casefold()):
-        token = token.replace("’", "'")
-        tokens.extend(CONTRACTION_EXPANSIONS.get(token, (token,)))
-    return tokens
-
-
-def source_tokens_with_delivery_fillers_removed(source: list[str], candidate: list[str]) -> list[str]:
-    """Remove only approved discourse markers while matching source tokens in order."""
-    result: list[str] = []
-    cursor = 0
-    index = 0
-    while index < len(candidate):
-        token = candidate[index]
-        if cursor < len(source) and token == source[cursor]:
-            result.append(token)
-            cursor += 1
-            index += 1
-            continue
-        if token in APPROVED_ENGLISH_FILLER_TOKENS:
-            index += 1
-            continue
-        matched_phrase = next(
-            (phrase for phrase in APPROVED_ENGLISH_FILLER_PHRASES
-             if tuple(candidate[index:index + len(phrase)]) == phrase),
-            None,
-        )
-        if matched_phrase:
-            index += len(matched_phrase)
-            continue
-        result.append(token)
-        index += 1
-    return result
-
-
 def sentence_boundaries(text: str) -> list[int]:
     boundaries: list[int] = []
     for match in re.finditer(r"[.!?;]", text):
@@ -303,8 +284,214 @@ def partner_for_speaker(speaker_id: str) -> str:
     return "secondary" if speaker_id == "primary" else "primary"
 
 
+def speaker_seed(source_sha256: str) -> int:
+    """Derive the reproducible English schedule seed from the frozen policy."""
+    digest = hashlib.sha256(f"{source_sha256}:{SCRIPT_POLICY_VERSION}".encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
+def normalise_speaker_schedule(
+    source_sha256: str, schedule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate or derive the schedule configuration used by English writing."""
+    if schedule is None:
+        seed = speaker_seed(source_sha256)
+        return {"mode": SPEAKER_SCHEDULE_POLICY, "seed": seed}
+    if not isinstance(schedule, dict) or schedule.get("mode") != SPEAKER_SCHEDULE_POLICY:
+        raise ValueError(f"English speaker schedule mode must be {SPEAKER_SCHEDULE_POLICY}.")
+    seed = schedule.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("English speaker schedule seed must be a non-negative integer.")
+    return {"mode": SPEAKER_SCHEDULE_POLICY, "seed": seed}
+
+
 def word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z]+(?:[’'][A-Za-z]+)?", text))
+
+
+def candidate_sections(candidate: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Accept the new framed object while retaining body-array compatibility."""
+    if isinstance(candidate, list):
+        return [], candidate, []
+    if not isinstance(candidate, dict) or set(candidate) != {"opening", "body", "closing"}:
+        raise ValueError("English candidate must be a JSON object with opening, body and closing arrays.")
+    sections = (candidate["opening"], candidate["body"], candidate["closing"])
+    if any(not isinstance(section, list) for section in sections):
+        raise ValueError("English opening, body and closing sections must be arrays.")
+    return sections
+
+
+def source_name_tokens(paragraphs: list[dict[str, Any]]) -> set[str]:
+    return {
+        token
+        for paragraph in paragraphs
+        for token in re.findall(r"\b[A-Z][A-Za-z0-9.-]{2,}\b", paragraph["text"])
+        if token not in {"The", "This", "That", "After", "First", "Second"}
+    }
+
+
+def validate_wrapper_block(
+    block: list[dict[str, Any]], kind: str, paragraphs: list[dict[str, Any]],
+) -> None:
+    """Validate creative framing without treating it as body source coverage."""
+    if not block:
+        raise ValueError(f"English {kind} section must contain at least one segment.")
+    if len(block) > CREATIVE_MAX_SEGMENTS:
+        raise ValueError(f"English {kind} section must contain no more than {CREATIVE_MAX_SEGMENTS} segments.")
+    known = [paragraph_id(item) for item in paragraphs]
+    known_set = set(known)
+    known_index = {source_id: position for position, source_id in enumerate(known)}
+    names = source_name_tokens(paragraphs)
+    expected_speaker = "primary" if kind == "opening" else "secondary"
+    for item in block:
+        if not isinstance(item, dict) or set(item) != ALLOWED_FIELDS:
+            raise ValueError(f"Every English {kind} segment must contain exactly the five contract fields.")
+        if item.get("speaker_id") not in SPEAKERS:
+            raise ValueError(f"Every English {kind} segment must use an approved speaker.")
+        if item.get("speaker_id") != expected_speaker:
+            raise ValueError(f"English {kind} segments must use the {expected_speaker} host.")
+        if item.get("kind") != kind:
+            raise ValueError(f"English {kind} section contains a different segment kind.")
+        text = item.get("spoken_text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"Every English {kind} segment needs spoken text.")
+        ids = item.get("source_paragraph_ids")
+        if not isinstance(ids, list) or any(not isinstance(source_id, str) or source_id not in known_set for source_id in ids):
+            raise ValueError(f"English {kind} segments must reference known paragraphs or an empty source list.")
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"English {kind} segments must not repeat source paragraph IDs.")
+        positions = [known_index[source_id] for source_id in ids]
+        if positions != sorted(positions):
+            raise ValueError(f"English {kind} source paragraph IDs must be in source order.")
+        if not ids and (UNLINKED_WRAPPER_FACT.search(text) or any(
+            re.search(rf"(?<![A-Za-z]){re.escape(token)}(?![A-Za-z])", text) for token in names
+        )):
+            raise ValueError("Unlinked opening/closing framing must not contain source-specific facts or names.")
+
+
+def _mechanically_alternates(speakers: list[str]) -> bool:
+    if len(speakers) < MECHANICAL_ALTERNATION_WINDOW:
+        return False
+    for start in range(len(speakers) - MECHANICAL_ALTERNATION_WINDOW + 1):
+        window = speakers[start:start + MECHANICAL_ALTERNATION_WINDOW]
+        if all(window[index] == window[index - 2] for index in range(2, len(window))):
+            return True
+    return False
+
+
+def _schedule_is_valid(segments: list[dict[str, Any]], require_balance: bool = True) -> bool:
+    run: list[str] = []
+    for segment in segments:
+        speaker = segment["speaker_id"]
+        if run and run[-1] != speaker:
+            run = [speaker]
+        else:
+            run.append(speaker)
+        if len(run) > MAX_CONSECUTIVE_ENGLISH_SEGMENTS:
+            return False
+    if _mechanically_alternates([segment["speaker_id"] for segment in segments]):
+        return False
+    factual = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
+    if len(factual) >= 2 and {segment["speaker_id"] for segment in factual} != SPEAKERS:
+        return False
+    interactions = [segment for segment in segments if segment["kind"] in INTERACTION_KINDS]
+    if len(factual) >= MIN_INTERACTION_FACTUAL_SEGMENTS:
+        if len(interactions) < MIN_INTERACTION_SEGMENTS or {segment["speaker_id"] for segment in interactions} != SPEAKERS:
+            return False
+    for index, segment in enumerate(segments):
+        if segment["kind"] == "prompt":
+            if index + 1 >= len(segments) or segments[index + 1]["kind"] not in FACTUAL_KINDS:
+                return False
+            if segments[index + 1]["speaker_id"] == segment["speaker_id"]:
+                return False
+    if require_balance:
+        counts = {
+            speaker: sum(word_count(segment["spoken_text"]) for segment in factual if segment["speaker_id"] == speaker)
+            for speaker in SPEAKERS
+        }
+        total = sum(counts.values())
+        if len(factual) >= 2:
+            if total <= 0:
+                return False
+            shares = {speaker: counts[speaker] / total for speaker in SPEAKERS}
+            if any(share < MIN_ENGLISH_WORD_SHARE or share > MAX_ENGLISH_WORD_SHARE for share in shares.values()):
+                return False
+    return True
+
+
+def assign_speaker_schedule(
+    segments: list[dict[str, Any]], seed: int, *,
+    prefix: list[dict[str, Any]] | None = None,
+    suffix: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Assign speakers with stable randomness while preserving hard constraints.
+
+    Candidate speaker IDs are intentionally ignored. ``prefix`` and ``suffix``
+    let the scheduler account for the fixed English opening and closing hosts
+    when checking run and alternation constraints.
+    """
+    if not segments:
+        return segments
+    rng = random.Random(seed)
+    best: list[dict[str, Any]] | None = None
+    best_score: tuple[float, int, float, str] | None = None
+    prefix = prefix or []
+    suffix = suffix or []
+    for _ in range(512):
+        attempt = copy.deepcopy(segments)
+        for index, segment in enumerate(attempt):
+            choices = list(sorted(SPEAKERS))
+            if index and attempt[index - 1]["kind"] == "prompt":
+                choices = [partner_for_speaker(attempt[index - 1]["speaker_id"])]
+            else:
+                previous = attempt[index - 1]["speaker_id"] if index else None
+                current_run = 0
+                for prior in reversed(attempt[:index]):
+                    if prior["speaker_id"] != previous:
+                        break
+                    current_run += 1
+                if previous and current_run >= MAX_CONSECUTIVE_ENGLISH_SEGMENTS:
+                    choices = [partner_for_speaker(previous)]
+            segment["speaker_id"] = rng.choice(choices)
+        full_attempt = [*prefix, *attempt, *suffix]
+        if not _schedule_is_valid(full_attempt):
+            continue
+        factual = [segment for segment in attempt if segment["kind"] in FACTUAL_KINDS]
+        counts = {
+            speaker: sum(word_count(segment["spoken_text"]) for segment in factual if segment["speaker_id"] == speaker)
+            for speaker in SPEAKERS
+        }
+        total = max(1, sum(counts.values()))
+        balance_penalty = abs(counts["primary"] / total - TARGET_ENGLISH_WORD_SHARE)
+        adjacent_pairs = sum(
+            attempt[index]["speaker_id"] == attempt[index - 1]["speaker_id"] for index in range(1, len(attempt))
+        )
+        schedule_key = "".join("A" if item["speaker_id"] == "primary" else "B" for item in attempt)
+        # Once hard constraints and balance are satisfied, the seeded random
+        # rank selects among equally balanced schedules; the remaining score
+        # fields keep the preference for natural runs and a stable final tie.
+        score = (balance_penalty, rng.random(), -adjacent_pairs, schedule_key)
+        if best_score is None or score < best_score:
+            best, best_score = attempt, score
+    if best is None:
+        factual = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
+        factual_word_count = sum(word_count(segment["spoken_text"]) for segment in factual)
+        interactions = sum(segment["kind"] in INTERACTION_KINDS for segment in segments)
+        raise ValueError(
+            "Unable to create a valid seeded English speaker schedule: "
+            + json.dumps({
+                "factual_segments": len(factual),
+                "factual_word_count": factual_word_count,
+                "interaction_segments": interactions,
+                "constraints": {
+                    "factual_word_share": [MIN_ENGLISH_WORD_SHARE, MAX_ENGLISH_WORD_SHARE],
+                    "max_consecutive_segments": MAX_CONSECUTIVE_ENGLISH_SEGMENTS,
+                    "required_interactions_for_long_scripts": MIN_INTERACTION_SEGMENTS,
+                    "mechanical_alternation_window": MECHANICAL_ALTERNATION_WINDOW,
+                },
+            }, ensure_ascii=False)
+        )
+    return best
 
 
 def validate_interaction(segment: dict[str, Any]) -> None:
@@ -323,6 +510,37 @@ def validate_interaction(segment: dict[str, Any]) -> None:
             raise ValueError(f"English prompts must contain no more than {MAX_PROMPT_WORDS} words.")
         if not text.endswith("?"):
             raise ValueError("English prompts must end with a question mark.")
+
+
+def delivery_marker_tokens(text: str) -> list[str]:
+    return [token.casefold() for token in re.findall(r"[A-Za-z]+(?:[’'][A-Za-z]+)?", text)]
+
+
+def english_delivery_warnings(segments: list[dict[str, Any]]) -> list[str]:
+    """Report repetitive delivery markers without making their vocabulary closed."""
+    warnings: list[str] = []
+    marker_positions: dict[str, list[int]] = {}
+    marker_count = 0
+    token_count = 0
+    for index, segment in enumerate(segments):
+        tokens = delivery_marker_tokens(segment["spoken_text"])
+        markers = [token for token in tokens if token in DISCOURSE_MARKER_HINTS]
+        marker_count += len(markers)
+        token_count += len(tokens)
+        for marker in markers:
+            marker_positions.setdefault(marker, []).append(index)
+        if tokens and all(
+            token in DISCOURSE_MARKER_HINTS for token in tokens
+        ):
+            raise ValueError("English delivery markers cannot form a standalone segment.")
+    for marker, positions in marker_positions.items():
+        for start in range(len(positions) - 2):
+            if positions[start + 2] - positions[start] <= 5:
+                warnings.append(f"Repeated discourse marker '{marker}' appears three times within six segments.")
+                break
+    if token_count >= 12 and marker_count / token_count >= 0.35:
+        warnings.append("English delivery may be filler-heavy; review discourse-marker density without changing source content.")
+    return warnings
 
 
 def build_english(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -345,12 +563,30 @@ def build_english(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return segments
 
 
-def english_request(article: dict[str, Any], paragraphs: list[dict[str, Any]]) -> dict[str, Any]:
+def english_request(
+    article: dict[str, Any], paragraphs: list[dict[str, Any]],
+    speaker_schedule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Create the compact request used for a reviewed conversational English draft."""
+    schedule = normalise_speaker_schedule(article["source_sha256"], speaker_schedule)
+    seed = schedule["seed"]
     return {
         "source_sha256": article["source_sha256"],
         "language": "en",
         "instructions": ENGLISH_STYLE_INSTRUCTIONS,
+        "creative_frame": {
+            "enabled": True,
+            "source_policy": CREATIVE_FRAME_POLICY,
+            "media_mode": CREATIVE_FRAME_MEDIA_MODE,
+            "opening": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
+            "closing": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
+        },
+        "speaker_schedule": {
+            **schedule,
+            "seed": seed,
+            "max_consecutive_segments": MAX_CONSECUTIVE_ENGLISH_SEGMENTS,
+            "avoid_mechanical_alternation": True,
+        },
         "speaker_balance": {
             "target_word_share": {speaker: TARGET_ENGLISH_WORD_SHARE for speaker in sorted(SPEAKERS)},
             "acceptable_word_share": {
@@ -415,30 +651,62 @@ def validate_english_candidate_body(
             if item["kind"] == "prompt":
                 if index + 1 >= len(grouped[source_id]) or grouped[source_id][index + 1]["kind"] not in FACTUAL_KINDS:
                     raise ValueError("An English prompt must be immediately followed by a factual source segment.")
-                if grouped[source_id][index + 1]["speaker_id"] == item["speaker_id"]:
-                    raise ValueError("An English prompt must be answered by the other speaker.")
     return grouped
 
 
-def finalize_english(paragraphs: list[dict[str, Any]], candidate: Any) -> list[dict[str, Any]]:
-    """Freeze an oral English draft while retaining source links and speaker balance."""
-    grouped = validate_english_candidate_body(paragraphs, candidate)
+def finalize_english(
+    paragraphs: list[dict[str, Any]], candidate: Any, speaker_seed: int | None = None,
+) -> list[dict[str, Any]]:
+    """Freeze an oral English draft, including optional creative framing."""
+    opening, body, closing = candidate_sections(candidate)
+    if bool(opening) != bool(closing):
+        raise ValueError("English candidates with framing must contain both opening and closing sections.")
+    if opening:
+        validate_wrapper_block(opening, "opening", paragraphs)
+        validate_wrapper_block(closing, "closing", paragraphs)
+    grouped = validate_english_candidate_body(paragraphs, body)
+    body_segments = [item for paragraph in paragraphs for item in grouped[paragraph_id(paragraph)]]
+    if speaker_seed is not None:
+        fixed_opening = copy.deepcopy(opening)
+        fixed_closing = copy.deepcopy(closing)
+        body_segments = assign_speaker_schedule(
+            body_segments,
+            speaker_seed,
+            prefix=fixed_opening,
+            suffix=fixed_closing,
+        )
     segments: list[dict[str, Any]] = []
     ordinal = 1
-    for paragraph in paragraphs:
-        source_id = paragraph_id(paragraph)
-        for item in grouped[source_id]:
-            segments.append({
-                "segment_id": f"en-{ordinal:03d}",
-                "speaker_id": item["speaker_id"],
-                "kind": item["kind"],
-                "spoken_text": item["spoken_text"].strip(),
-                "source_paragraph_ids": [source_id],
-            })
-            ordinal += 1
+    for item in opening:
+        segments.append({
+            "segment_id": f"en-{ordinal:03d}",
+            "speaker_id": item["speaker_id"],
+            "kind": item["kind"],
+            "spoken_text": item["spoken_text"].strip(),
+            "source_paragraph_ids": list(item["source_paragraph_ids"]),
+        })
+        ordinal += 1
+    for item in body_segments:
+        segments.append({
+            "segment_id": f"en-{ordinal:03d}",
+            "speaker_id": item["speaker_id"],
+            "kind": item["kind"],
+            "spoken_text": item["spoken_text"].strip(),
+            "source_paragraph_ids": list(item["source_paragraph_ids"]),
+        })
+        ordinal += 1
+    for item in closing:
+        segments.append({
+            "segment_id": f"en-{ordinal:03d}",
+            "speaker_id": item["speaker_id"],
+            "kind": item["kind"],
+            "spoken_text": item["spoken_text"].strip(),
+            "source_paragraph_ids": list(item["source_paragraph_ids"]),
+        })
+        ordinal += 1
     validate_structure(segments, "en")
     validate_coverage(paragraphs, segments, speaker_policy="english")
-    validate_english(paragraphs, segments)
+    validate_english(paragraphs, segments, strict_schedule=speaker_seed is not None)
     return segments
 
 
@@ -572,9 +840,15 @@ def init_production(
     variant: str = "en",
     region: str | None = None,
     aspect_ratios: list[str] | None = None,
+    speaker_seed_value: int | None = None,
 ) -> None:
     article, _ = load_article(article_path)
     languages, script_artifacts, captions = variant_configuration(variant)
+    schedule = normalise_speaker_schedule(
+        article["source_sha256"],
+        {"mode": SPEAKER_SCHEDULE_POLICY, "seed": speaker_seed_value}
+        if speaker_seed_value is not None else None,
+    )
     package_root = output_path.parent
     try:
         article_relative = str(article_path.resolve().relative_to(package_root.resolve()))
@@ -586,9 +860,16 @@ def init_production(
         "article": {"path": article_relative, "source_sha256": article["source_sha256"]},
         "script_generation": {
             "provider": "codex-skill",
-            "policy_version": "5.1",
+            "policy_version": SCRIPT_POLICY_VERSION,
             "policy": "source_bounded_conversational_rewrite",
             "zh_punctuation_retry_limit": 1,
+        },
+        "creative_frame": {
+            "enabled": True,
+            "source_policy": CREATIVE_FRAME_POLICY,
+            "media_mode": CREATIVE_FRAME_MEDIA_MODE,
+            "opening": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
+            "closing": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
         },
         "languages": languages,
         "speakers": {"primary": "primary", "secondary": "secondary"},
@@ -604,7 +885,18 @@ def init_production(
                     "primary": {"name": "en-US-Ava:DragonHDLatestNeural", "parameters": {}},
                     "secondary": {"name": "en-US-Andrew:DragonHDLatestNeural", "parameters": {"temperature": 1.0}},
                 },
-                "zh-CN": {"primary": "zh-CN-XiaoxiaoNeural", "secondary": "zh-CN-YunxiNeural"},
+                "zh-CN": {
+                    "primary": {
+                        "id": "7ea726c9-9cde-49eb-ad47-e3ab8a49f4b6",
+                        "name": "zh-CN-Xiaochen:DragonHDLatestNeural",
+                        "parameters": {"temperature": 1.0},
+                    },
+                    "secondary": {
+                        "id": "d4182cbc-7818-4a96-9a95-d5c2bdf05bae",
+                        "name": "zh-CN-Yunxiao:DragonHDFlashLatestNeural",
+                        "parameters": {"temperature": 1.0},
+                    },
+                },
             },
             "delivery": {
                 "en": {
@@ -618,7 +910,52 @@ def init_production(
         "progress": {"segments": {}},
         "failures": [],
     }
+    if variant in {"en", "en-zh"}:
+        production["speaker_schedule"] = {
+            **schedule,
+            "max_consecutive_segments": MAX_CONSECUTIVE_ENGLISH_SEGMENTS,
+            "avoid_mechanical_alternation": True,
+        }
     write_json(output_path, production)
+
+
+def production_speaker_schedule(article: dict[str, Any], production_path: Path | None) -> dict[str, Any]:
+    """Read the frozen English schedule, or derive the standalone fallback."""
+    if production_path is None:
+        return normalise_speaker_schedule(article["source_sha256"])
+    production = read_json(production_path)
+    if production.get("variant") not in {None, "en", "en-zh"}:
+        raise ValueError("English speaker scheduling requires an en or en-zh production variant.")
+    configured_source = production.get("article", {}).get("source_sha256")
+    if configured_source and configured_source != article["source_sha256"]:
+        raise ValueError("Production article source hash does not match the selected article.")
+    configured = production.get("speaker_schedule")
+    if configured is None:
+        # A 5.0/5.1 package has no frozen random schedule. Keep it usable and
+        # use the same deterministic standalone derivation for this invocation.
+        return normalise_speaker_schedule(article["source_sha256"])
+    return normalise_speaker_schedule(article["source_sha256"], configured)
+
+
+def validate_frozen_speaker_schedule(
+    article: dict[str, Any], paragraphs: list[dict[str, Any]],
+    segments: list[dict[str, Any]], production_path: Path,
+) -> None:
+    """Ensure a final English script matches the production-frozen seed."""
+    production = read_json(production_path)
+    policy_version = production.get("script_generation", {}).get("policy_version")
+    if policy_version and policy_version != SCRIPT_POLICY_VERSION and "speaker_schedule" not in production:
+        return
+    schedule = production_speaker_schedule(article, production_path)
+    opening, body, closing = candidate_sections(segments)
+    expected = assign_speaker_schedule(body, schedule["seed"], prefix=opening, suffix=closing)
+    actual_speakers = [segment["speaker_id"] for segment in body]
+    expected_speakers = [segment["speaker_id"] for segment in expected]
+    if actual_speakers != expected_speakers:
+        raise ValueError(
+            "English script speaker assignments do not match the frozen production seed: "
+            + json.dumps({"seed": schedule["seed"], "expected": expected_speakers, "actual": actual_speakers}, ensure_ascii=False)
+        )
 
 
 def translation_request(article: dict[str, Any], paragraphs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -861,7 +1198,8 @@ def validate_structure(segments: Any, language: str) -> None:
             raise ValueError("Every script segment must contain exactly the five contract fields.")
         if segment["segment_id"] != f"{prefix}-{ordinal:03d}":
             raise ValueError("Segment IDs must be consecutive and language-prefixed.")
-        if segment["kind"] not in ALLOWED_KINDS:
+        allowed_kinds = ALLOWED_KINDS if language == "en" else FACTUAL_KINDS
+        if segment["kind"] not in allowed_kinds:
             raise ValueError("Script contains an illegal segment kind.")
         if not isinstance(segment["spoken_text"], str) or not segment["spoken_text"].strip():
             raise ValueError("Every segment needs spoken text.")
@@ -869,6 +1207,8 @@ def validate_structure(segments: Any, language: str) -> None:
             raise ValueError("source_paragraph_ids must be an array.")
         if segment["speaker_id"] not in SPEAKERS:
             raise ValueError("Every body segment must use an approved speaker.")
+        if language == "en" and segment["kind"] in WRAPPER_KINDS:
+            continue
         if not segment["source_paragraph_ids"] or len(segment["source_paragraph_ids"]) != 1:
             raise ValueError("Every body segment must reference exactly one source paragraph.")
         if language == "zh-CN" and segment["kind"] != "sentence_split":
@@ -880,12 +1220,29 @@ def validate_coverage(
     segments: list[dict[str, Any]],
     speaker_policy: str = "legacy",
 ) -> None:
+    if speaker_policy == "legacy" and any(segment.get("kind") in WRAPPER_KINDS for segment in segments if isinstance(segment, dict)):
+        speaker_policy = "english"
     known = [paragraph_id(item) for item in paragraphs]
     index = {value: position for position, value in enumerate(known)}
+    opening_end = 0
+    while opening_end < len(segments) and segments[opening_end]["kind"] == "opening":
+        opening_end += 1
+    closing_start = len(segments)
+    while closing_start > opening_end and segments[closing_start - 1]["kind"] == "closing":
+        closing_start -= 1
+    body = segments[opening_end:closing_start]
+    if any(segment["kind"] in WRAPPER_KINDS for segment in body):
+        raise ValueError("English opening and closing segments must surround the body.")
+    if any(segment["kind"] == "opening" for segment in segments[opening_end:]) or any(
+        segment["kind"] == "closing" for segment in segments[:closing_start]
+    ):
+        raise ValueError("English opening and closing segments must surround the body.")
+    if (opening_end > 0) != (closing_start < len(segments)):
+        raise ValueError("English scripts with framing must contain both opening and closing sections.")
     flattened: list[str] = []
     completed: list[str] = []
     factual_speakers: set[str] = set()
-    for segment in segments:
+    for segment in body:
         ids = segment["source_paragraph_ids"]
         if len(ids) != 1 or ids[0] not in index:
             raise ValueError("Each body segment must reference one known source paragraph.")
@@ -898,30 +1255,33 @@ def validate_coverage(
         raise ValueError("Every source paragraph must be covered once, in source order.")
     if any(index[flattened[position]] > index[flattened[position + 1]] for position in range(len(flattened) - 1)):
         raise ValueError("Body segments are out of source order.")
+
+    if speaker_policy == "english":
+        for position, segment in enumerate(body):
+            if segment["kind"] != "prompt":
+                continue
+            if position + 1 >= len(body) or body[position + 1]["kind"] not in FACTUAL_KINDS:
+                raise ValueError("An English prompt must be immediately followed by a factual source segment.")
+            if body[position + 1]["speaker_id"] == segment["speaker_id"]:
+                raise ValueError("An English prompt must be answered by the other speaker.")
+
     if len(known) >= 2 and factual_speakers != {"primary", "secondary"}:
         raise ValueError("Articles with at least two paragraphs must use both speakers.")
 
     if speaker_policy == "english":
-        factual_segments = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
+        factual_segments = [segment for segment in body if segment["kind"] in FACTUAL_KINDS]
         if len(factual_segments) >= 2 and factual_speakers != SPEAKERS:
             raise ValueError("English scripts with at least two factual segments must give both hosts substantive turns.")
-        for position, segment in enumerate(segments):
-            if segment["kind"] != "prompt":
-                continue
-            if position + 1 >= len(segments) or segments[position + 1]["kind"] not in FACTUAL_KINDS:
-                raise ValueError("An English prompt must be immediately followed by a factual source segment.")
-            if segments[position + 1]["speaker_id"] == segment["speaker_id"]:
-                raise ValueError("An English prompt must be answered by the other speaker.")
         return
 
     by_source: dict[str, set[str]] = {source_id: set() for source_id in known}
-    for segment in segments:
+    for segment in body:
         if segment["kind"] in FACTUAL_KINDS:
             by_source[segment["source_paragraph_ids"][0]].add(segment["speaker_id"])
     for order, source_id in enumerate(known, start=1):
         if by_source[source_id] != {speaker_for_paragraph(order, len(known))}:
             raise ValueError("Factual segments must keep the deterministic source speaker assignment.")
-    for segment in segments:
+    for segment in body:
         if segment["kind"] in INTERACTION_KINDS:
             source_id = segment["source_paragraph_ids"][0]
             order = index[source_id] + 1
@@ -930,8 +1290,9 @@ def validate_coverage(
 
 
 def english_speaker_balance(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    substantive = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
     word_counts = {
-        speaker: sum(word_count(segment["spoken_text"]) for segment in segments if segment["speaker_id"] == speaker)
+        speaker: sum(word_count(segment["spoken_text"]) for segment in substantive if segment["speaker_id"] == speaker)
         for speaker in sorted(SPEAKERS)
     }
     total_words = sum(word_counts.values())
@@ -958,9 +1319,14 @@ def english_speaker_balance(segments: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def validate_english_speaker_balance(segments: list[dict[str, Any]]) -> None:
+def validate_english_speaker_balance(
+    segments: list[dict[str, Any]], *, strict_schedule: bool = True,
+) -> None:
     report = english_speaker_balance(segments)
-    if report["total_words"] < MIN_BALANCED_ENGLISH_WORDS:
+    factual_segments = [segment for segment in segments if segment["kind"] in FACTUAL_KINDS]
+    if len(factual_segments) < 2:
+        return
+    if not strict_schedule and report["total_words"] < MIN_BALANCED_ENGLISH_WORDS:
         return
     shares = report["word_shares"]
     if any(share < MIN_ENGLISH_WORD_SHARE or share > MAX_ENGLISH_WORD_SHARE for share in shares.values()):
@@ -980,6 +1346,8 @@ def validate_english_turn_balance(segments: list[dict[str, Any]]) -> None:
                 f"English script has more than {MAX_CONSECUTIVE_ENGLISH_SEGMENTS} consecutive segments from {speaker}: "
                 + json.dumps([item["segment_id"] for item in run], ensure_ascii=False)
             )
+    if _mechanically_alternates([segment["speaker_id"] for segment in segments]):
+        raise ValueError("English script uses a mechanically alternating host schedule.")
     factual_count = sum(segment["kind"] in FACTUAL_KINDS for segment in segments)
     interactions = [segment for segment in segments if segment["kind"] in INTERACTION_KINDS]
     if factual_count >= MIN_INTERACTION_FACTUAL_SEGMENTS:
@@ -991,7 +1359,19 @@ def validate_english_turn_balance(segments: list[dict[str, Any]]) -> None:
             raise ValueError("English script must give both hosts an interaction opportunity.")
 
 
-def validate_english(paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
+def validate_english(
+    paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]], *,
+    strict_schedule: bool = False,
+) -> list[str]:
+    opening_end = 0
+    while opening_end < len(segments) and segments[opening_end]["kind"] == "opening":
+        opening_end += 1
+    closing_start = len(segments)
+    while closing_start > opening_end and segments[closing_start - 1]["kind"] == "closing":
+        closing_start -= 1
+    if opening_end:
+        validate_wrapper_block(segments[:opening_end], "opening", paragraphs)
+        validate_wrapper_block(segments[closing_start:], "closing", paragraphs)
     for segment in segments:
         if SPOKEN_BRACKETS.search(segment["spoken_text"]):
             raise ValueError("English script must not retain parenthetical or bracketed text.")
@@ -1006,17 +1386,21 @@ def validate_english(paragraphs: list[dict[str, Any]], segments: list[dict[str, 
             raise ValueError("English script segments must be complete captionable sentences or self-contained clauses.")
         if segment["kind"] in INTERACTION_KINDS:
             validate_interaction(segment)
-    validate_english_speaker_balance(segments)
+    warnings = english_delivery_warnings(segments)
+    validate_english_speaker_balance(segments, strict_schedule=strict_schedule)
     validate_english_turn_balance(segments)
+    return warnings
 
 
-def validate_script(article_path: Path, script_path: Path, language: str) -> dict[str, Any]:
+def validate_script(
+    article_path: Path, script_path: Path, language: str, *, strict_schedule: bool = True,
+) -> dict[str, Any]:
     _, paragraphs = load_article(article_path)
     segments = read_json(script_path)
     validate_structure(segments, language)
     validate_coverage(paragraphs, segments, speaker_policy="english" if language == "en" else "legacy")
     if language == "en":
-        validate_english(paragraphs, segments)
+        warnings = validate_english(paragraphs, segments, strict_schedule=strict_schedule)
     else:
         issues = chinese_punctuation_issues(segments)
         if issues:
@@ -1025,7 +1409,8 @@ def validate_script(article_path: Path, script_path: Path, language: str) -> dic
     body = segments
     characters = sum(len(item["spoken_text"]) for item in body)
     estimate = round((characters / (260 if language == "zh-CN" else 900)) * 60, 1)
-    return {"status": "valid", "language": language, "segments": len(segments), "body_segments": len(body), "characters": characters, "estimated_seconds": estimate}
+    warnings = warnings if language == "en" else []
+    return {"status": "valid", "language": language, "segments": len(segments), "body_segments": len(body), "characters": characters, "estimated_seconds": estimate, "warnings": warnings}
 
 
 def main() -> int:
@@ -1037,15 +1422,18 @@ def main() -> int:
     init_parser.add_argument("--variant", choices=tuple(sorted(VARIANTS)), required=True)
     init_parser.add_argument("--region", required=True)
     init_parser.add_argument("--aspect-ratio", choices=("16:9", "9:16"), action="append", dest="aspect_ratios")
+    init_parser.add_argument("--speaker-seed", type=int)
     en_parser = commands.add_parser("english")
     en_parser.add_argument("article")
     en_parser.add_argument("output")
     english_request_parser = commands.add_parser("english-request", help="Print the source-linked request for a conversational English draft.")
     english_request_parser.add_argument("article")
+    english_request_parser.add_argument("--production")
     english_finalize_parser = commands.add_parser("finalize-english", help="Validate and freeze a conversational English draft.")
     english_finalize_parser.add_argument("article")
     english_finalize_parser.add_argument("candidate")
     english_finalize_parser.add_argument("output")
+    english_finalize_parser.add_argument("--production")
     request_parser = commands.add_parser("translation-request")
     request_parser.add_argument("article")
     subtitle_request_parser = commands.add_parser("subtitle-request", help="Print the source-linked request for reviewed en-zh captions.")
@@ -1078,6 +1466,7 @@ def main() -> int:
     validate_parser.add_argument("article")
     validate_parser.add_argument("script")
     validate_parser.add_argument("--language", choices=("en", "zh-CN"), required=True)
+    validate_parser.add_argument("--production")
     editorial_request_parser = commands.add_parser("editorial-request", help="Print the source-linked request for guide questions and publishing assets.")
     editorial_request_parser.add_argument("article")
     editorial_finalize_parser = commands.add_parser("finalize-editorial", help="Validate an editorial draft and materialise publishing assets.")
@@ -1093,6 +1482,7 @@ def main() -> int:
         if args.command == "init-production":
             init_production(
                 Path(args.article), Path(args.production), args.variant, args.region, args.aspect_ratios,
+                args.speaker_seed,
             )
             print(json.dumps({"status": "created", "production": str(Path(args.production).resolve())}, ensure_ascii=False))
         elif args.command == "english":
@@ -1102,12 +1492,24 @@ def main() -> int:
             print(json.dumps({"status": "created", "script": str(Path(args.output).resolve()), "segments": len(segments)}, ensure_ascii=False))
         elif args.command == "english-request":
             article, paragraphs = load_article(Path(args.article))
-            print(json.dumps(english_request(article, paragraphs), ensure_ascii=False, indent=2))
+            schedule = production_speaker_schedule(article, Path(args.production) if args.production else None)
+            print(json.dumps(english_request(article, paragraphs, schedule), ensure_ascii=False, indent=2))
         elif args.command == "finalize-english":
-            _, paragraphs = load_article(Path(args.article))
-            segments = finalize_english(paragraphs, read_json(Path(args.candidate)))
+            article, paragraphs = load_article(Path(args.article))
+            schedule = production_speaker_schedule(article, Path(args.production) if args.production else None)
+            segments = finalize_english(
+                paragraphs,
+                read_json(Path(args.candidate)),
+                schedule["seed"],
+            )
             write_json(Path(args.output), segments)
-            print(json.dumps({"status": "created", "script": str(Path(args.output).resolve()), "segments": len(segments)}, ensure_ascii=False))
+            print(json.dumps({
+                "status": "created",
+                "script": str(Path(args.output).resolve()),
+                "segments": len(segments),
+                "speaker_schedule": schedule,
+                "warnings": english_delivery_warnings(segments),
+            }, ensure_ascii=False))
         elif args.command == "translation-request":
             article, paragraphs = load_article(Path(args.article))
             print(json.dumps(translation_request(article, paragraphs), ensure_ascii=False, indent=2))
@@ -1150,7 +1552,24 @@ def main() -> int:
             validate_editorial_draft(editorial_article, editorial_paragraphs, read_editorial_json(Path(args.draft)))
             print(json.dumps({"status": "valid"}, ensure_ascii=False))
         else:
-            result = validate_script(Path(args.article), Path(args.script), args.language)
+            strict_schedule = False
+            if args.language == "en":
+                if not args.production:
+                    strict_schedule = True
+                else:
+                    production = read_json(Path(args.production))
+                    strict_schedule = (
+                        production.get("script_generation", {}).get("policy_version") == SCRIPT_POLICY_VERSION
+                        or "speaker_schedule" in production
+                    )
+            result = validate_script(
+                Path(args.article), Path(args.script), args.language,
+                strict_schedule=strict_schedule,
+            )
+            if args.language == "en" and args.production:
+                article, paragraphs = load_article(Path(args.article))
+                script = read_json(Path(args.script))
+                validate_frozen_speaker_schedule(article, paragraphs, script, Path(args.production))
             print(json.dumps(result, ensure_ascii=False, indent=2))
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(json.dumps({"status": "failed", "reason": str(error)}, ensure_ascii=False), file=sys.stderr)

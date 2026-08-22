@@ -1,4 +1,4 @@
 interface:
   display_name: "Economist Podcast Script"
   short_description: "Build faithful podcast scripts and publishing assets"
-  default_prompt: "Use $economist-source-to-podcast-script to turn a verified Economist article package into source-linked, conversational English and Chinese spoken scripts plus source-linked publishing copy, guide questions and release covers. Keep the narration natural and relaxed without inventing facts or dialogue."
+  default_prompt: "Use $economist-source-to-podcast-script to turn a verified Economist article package into source-linked, conversational English and Chinese spoken scripts plus source-linked publishing copy, guide questions and release covers. For English, include a source-bounded creative opening and closing, use natural discourse markers, and apply a reproducible non-mechanical two-host schedule. Keep the narration natural and relaxed without inventing facts or dialogue."
