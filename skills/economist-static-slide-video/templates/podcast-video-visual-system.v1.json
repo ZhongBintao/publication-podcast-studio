@@ -55,11 +55,17 @@
       "caption_bottom_inset_percent": 12,
       "caption_max_lines_per_language": 2
     },
+    "image_frame": {
+      "stroke": "solid",
+      "border_color": "#FFFFFF",
+      "border_width_output_px": 3,
+      "border_target": "contained_image"
+    },
     "decorative_style": {
       "page": "landscape and portrait use the flat #262626 background; neither uses texture or gradient",
       "text_boxes": "transparent rectangular shapes with no outline",
       "subtitle_rail": "PowerPoint roundRect with adjustment 0, visually a square-cornered full-width dark band; no outline",
-      "cover_image": "Unmasked rectangular picture using contain placement. Every source image keeps its original aspect ratio and is never cropped or distorted; letterboxing is acceptable.",
+      "cover_image": "Unmasked rectangular picture using contain placement with a 3 px white border around the actual contained image. Every source image keeps its original aspect ratio and is never cropped or distorted; letterboxing is acceptable.",
       "portrait_spacing": "The portrait opening uses a compact free-flow stack: a contained image, reduced metadata, an information block, and a two-language caption rail above the bottom 10% platform detail area. No decorative divider lines or top utility text are rendered."
     }
   },
@@ -97,7 +103,7 @@
           "source_object_id": "5",
           "kind": "multilingual_text",
           "z_index": 3,
-          "bbox": [80, 221.71, 584, 144],
+          "bbox": [80, 260, 584, 130],
           "content_binding": ["article.subtitle", "article.subtitle_zh"],
           "paragraphs": [
             { "binding": "article.subtitle", "font": { "latin": "Times New Roman", "east_asian": "Noto Sans SC" }, "font_size_pt": 20, "color": "#FFFFFF", "bold": false },
@@ -151,7 +157,7 @@
           "bbox": [774.27, 42, 333.39, 445],
           "content_binding": "article.issue_cover.file",
           "fit": "contain",
-          "style": { "stroke": "none", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_px": 2 }
+          "style": { "stroke": "solid", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_output_px": 3 }
         }
       ]
     },
@@ -322,7 +328,7 @@
           "bbox": [52.67, 40.32, 300, 180],
           "content_binding": "article.issue_cover.file",
           "fit": "contain",
-          "style": { "stroke": "none", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_px": 2 }
+          "style": { "stroke": "solid", "shadow": "none", "corner_radius_px": 0, "border_color": "#FFFFFF", "border_width_output_px": 3 }
         }
       ]
     },

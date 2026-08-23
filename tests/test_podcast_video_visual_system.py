@@ -96,8 +96,26 @@ class PodcastVideoVisualSystemTests(unittest.TestCase):
         self.assertNotIn("caption_number", layers)
         self.assertEqual(layers["issue_cover"]["bbox"], [52.67, 40.32, 300, 180])
         self.assertEqual(layers["issue_cover"]["fit"], "contain")
+        self.assertEqual(layers["issue_cover"]["style"]["stroke"], "solid")
+        self.assertEqual(layers["issue_cover"]["style"]["border_color"], "#FFFFFF")
+        self.assertEqual(layers["issue_cover"]["style"]["border_width_output_px"], 3)
+        self.assertEqual(self.definition["design_tokens"]["image_frame"]["border_target"], "contained_image")
         landscape = self.definition["templates"]["landscape_opening"]
+        landscape_cover = next(layer for layer in landscape["layers"] if layer["id"] == "issue_cover")
+        self.assertEqual(landscape_cover["style"]["stroke"], "solid")
+        self.assertEqual(landscape_cover["style"]["border_width_output_px"], 3)
         self.assertEqual(next(layer for layer in landscape["layers"] if layer["id"] == "headline")["bbox"], [80, 82.48, 466.67, 160])
+
+    def test_landscape_opening_metadata_boxes_do_not_overlap(self):
+        layers = {
+            layer["id"]: layer
+            for layer in self.definition["templates"]["landscape_opening"]["layers"]
+        }
+        headline = layers["headline"]["bbox"]
+        subtitle = layers["subtitle"]["bbox"]
+        byline = layers["byline_dateline"]["bbox"]
+        self.assertLessEqual(headline[1] + headline[3], subtitle[1])
+        self.assertLessEqual(subtitle[1] + subtitle[3], byline[1])
 
     def test_landscape_caption_rail_uses_one_compact_bilingual_flow(self):
         template = self.definition["templates"]["landscape_opening"]

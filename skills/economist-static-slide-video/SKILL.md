@@ -1,6 +1,6 @@
 ---
 name: economist-static-slide-video
-description: Create a source-linked two-state storyboard and render the vertical-first 9:16 or optional 16:9 Economist static-slide MP4 from completed local audio and canonical captions.
+description: Create a source-linked issue-cover opening and rotating article-media storyboard, then render the vertical-first 9:16 or optional 16:9 Economist static-slide MP4 from completed local audio and canonical captions.
 ---
 
 # Economist Static-Slide Video
@@ -44,9 +44,16 @@ This skill only validates and renders them; it never invents copy.
 ## Build the storyboard
 
 Run after the final audio exists, because the audio duration is the storyboard
-clock. The opening shows first; at the fixed boundary it is replaced by the
-two-question slide, which holds through the final audio until a future approved
-image-selection policy expands the storyboard.
+clock. The opening always uses `article.issue_cover.file`. At the fixed boundary
+it is replaced by the two-question content layout. Content slides rotate through
+all verified `article_image` and `article_chart` assets in source order, repeating
+the sequence as needed with a target dwell time of 20 seconds. Normal dwell is
+18–22 seconds after even distribution across the completed audio. If the
+programme is too short to give every approved asset 18 seconds, show every
+asset exactly once, divide the remaining content time evenly and record the
+short-program exception. There is no crop, animation or transition. If the
+article has no approved media, only then may content fall back to the issue
+cover.
 
 ```bash
 RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
@@ -78,6 +85,15 @@ SRT hashes and subtitle mode, and reuses a valid final MP4.
 
 - Reject missing audio, captions, article cover, storyboard asset, unsupported
   ratio, invalid cue timeline or non-contiguous slide timing.
+- Reject an opening that does not use the exact verified issue-cover file, or a
+  content slide that bypasses the approved article-media list. All opening and
+  content images use contain placement and a 3 px white border around the actual
+  contained image bounds. Referenced image hashes participate in rerun reuse.
+- Normalize new article assets from `role` and accept legacy `kind` packages.
+  When article assets exist, reject every content slide that uses the issue
+  cover. Validate strict source-order round-robin sequence and 18–22 second
+  dwell, except for the recorded short-program rule. The storyboard and render
+  reports include the normalized asset list, sequence and actual dwell range.
 - Structured cue timestamps drive reviewed bilingual caption-frame changes.
   `subtitle_mode=en-only` is a presentation-only projection of the same
   approved cue timeline: it renders the English field, structurally skips the
@@ -115,5 +131,8 @@ SRT hashes and subtitle mode, and reuses a valid final MP4.
   full stop or other terminal punctuation; punctuation is present only when it
   is present in the approved source/caption text.
 - The renderer uses no external services and writes no credentials.
-- The implementation is intentionally non-animated: no avatar footage,
-  background music, sound effects, generated imagery or transitions.
+- The implementation is intentionally non-animated: no avatar footage, sound
+  effects, generated imagery or transitions. It does not select music or remix
+  audio; it must mux the canonical mixed `audio/<language>/final.wav` produced
+  and audibility-validated by the media stage, so the final MP4 retains its
+  background music.

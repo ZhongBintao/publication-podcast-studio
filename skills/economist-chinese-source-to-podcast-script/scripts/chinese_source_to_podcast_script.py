@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import importlib.util
 import json
 import re
@@ -32,11 +33,17 @@ WRAPPER_KINDS = {"opening", "closing"}
 ALLOWED_KINDS = BODY_KINDS | WRAPPER_KINDS
 MAX_SPOKEN_SEGMENT_CHARS = 96
 MAX_CAPTION_UNIT_CHARS = 48
-MAX_OPENING_CHARS = 120
-MAX_CLOSING_CHARS = 120
+CHINESE_SCRIPT_POLICY_VERSION = "5.3"
+OPENING_SPEAKER_ORDER = ("primary", "secondary", "primary")
+CLOSING_SPEAKER_ORDER = ("primary", "secondary")
+MAX_WRAPPER_SEGMENT_CHARS = 48
+MAX_OPENING_CHARS = 144
+MAX_CLOSING_CHARS = 72
 MAX_CONSECUTIVE_SEGMENTS = 3
 MAX_REACTION_CHARS = 24
 MAX_PROMPT_CHARS = 36
+LONG_ARTICLE_MIN_PARAGRAPHS = 20
+REQUIRED_LONG_ARTICLE_INTERACTIONS = 4
 MIN_BALANCED_CHARS = 400
 MIN_WORD_SHARE = 0.40
 MAX_WORD_SHARE = 0.60
@@ -49,17 +56,22 @@ COMMA_WRAPPED_AMOUNT = re.compile(
 )
 TERMINAL_PUNCTUATION = re.compile(r"[。！？.!?][”’'\"）)]*$")
 UNLINKED_WRAPPER_FACT = re.compile(r"(?:\d|[%％$¥￥])")
+TEMPLATE_OPENING = re.compile(
+    r"^\s*(?:欢迎收听|欢迎来到|本期节目|今天我们(?:来|要)?(?:聊|谈|讨论))"
+)
 
 
 CHINESE_STYLE_INSTRUCTIONS = """You are the Chinese writing stage for a source-bounded, two-host Economist podcast.
 
-Translate and orally adapt each supplied verified English paragraph into natural spoken Chinese. Also write a concise, engaging opening and a natural closing for the programme. The result must sound like two prepared hosts talking through a reported story, not like a literal translation or a written article.
+Translate and orally adapt each supplied verified English paragraph into natural spoken Chinese. Also write a structured two-host opening and closing for the programme. The result must sound like two prepared hosts talking through a reported story, not like a literal translation or a written article.
 
 OUTPUT SHAPE
 
 - Return only a JSON object with three arrays: opening, body and closing.
 - Opening segments come first, body segments cover every supplied paragraph in order, and closing segments come last.
-- Each opening and closing block should be a short coherent passage, normally no more than 120 readable Chinese characters. Use primary for opening and secondary for closing.
+- Opening must contain exactly three turns in primary, secondary, primary order. Turn one is a concrete source-linked hook from the first two source paragraphs and must not begin with 欢迎收听, 本期节目 or 今天我们来聊. Turn two is a natural source-linked core question. Turn three is a brief route into the body and may use empty source links when it adds no fact.
+- Closing must contain exactly two turns in primary, secondary order. Turn one uses the final three source paragraphs to state what is known and still unsettled and to answer or recall the opening question. Turn two is a separate generic sign-off with empty source links.
+- Every wrapper turn is at most 48 readable Chinese characters. The complete opening is at most 144 characters and the complete closing is at most 72 characters.
 - A pure programme-framing segment may have an empty source_paragraph_ids array. If it states an article fact, number, judgment or concrete detail, cite one or more relevant source paragraph IDs.
 - Opening and closing may create suspense, ask why the topic matters, bridge into the story, summarize the reported arc, and thank listeners. Do not add unsupported facts, analysis, recommendations, predictions, conclusions or future-episode promises.
 
@@ -74,6 +86,7 @@ SOURCE-BOUNDED ORAL ADAPTATION
 HOST INTERACTION
 
 - Both hosts must deliver substantive source-linked material when the article has enough paragraphs.
+- An article with 20 or more source paragraphs must contain at least four prompt-to-other-host factual-answer pairs, with at least one pair anchored in each quarter of the source paragraph sequence.
 - You may use prompt and reaction segments to create natural rhythm. Every one must cite exactly one source paragraph.
 - A prompt must be immediately followed by a factual answer from the other host.
 - Reactions may acknowledge or frame the current source point, but may not introduce a viewpoint or new information.
@@ -88,7 +101,7 @@ TERMS AND MIXED ENGLISH
 
 OUTPUT
 
-Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify complete source coverage, source order, numeric preservation, natural Chinese rhythm, mixed-language readability, wrapper placement and two-host balance."""
+Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify complete source coverage, source order, numeric preservation, natural Chinese rhythm, mixed-language readability, wrapper placement, four-quarter interaction coverage for long articles and two-host balance."""
 
 
 def read_json(path: Path) -> Any:
@@ -176,8 +189,11 @@ def wrapper_issues(
     paragraphs: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     """Validate the creative wrapper without treating it as article body coverage."""
-    if not block:
-        raise ValueError(f"Chinese {kind} section must contain at least one segment.")
+    expected_order = OPENING_SPEAKER_ORDER if kind == "opening" else CLOSING_SPEAKER_ORDER
+    if len(block) != len(expected_order):
+        raise ValueError(
+            f"Chinese {kind} must contain exactly {len(expected_order)} two-host turns."
+        )
     known = [paragraph_id(item) for item in paragraphs]
     known_set = set(known)
     known_index = {source_id: position for position, source_id in enumerate(known)}
@@ -186,23 +202,27 @@ def wrapper_issues(
         for token in re.findall(r"\b[A-Z][A-Za-z0-9.-]{2,}\b", paragraph["text"])
         if token not in {"The", "This", "That", "After", "First", "Second"}
     }
-    expected_speaker = "primary" if kind == "opening" else "secondary"
     max_chars = MAX_OPENING_CHARS if kind == "opening" else MAX_CLOSING_CHARS
     total_chars = 0
     issues: list[dict[str, str]] = []
-    for item in block:
+    for position, item in enumerate(block):
         if not isinstance(item, dict) or set(item) != ALLOWED_FIELDS:
             raise ValueError("Every Chinese wrapper segment must contain exactly the five contract fields.")
+        expected_speaker = expected_order[position]
         if item.get("speaker_id") != expected_speaker:
-            raise ValueError(f"Chinese {kind} segments must use the {expected_speaker} speaker.")
+            raise ValueError(
+                f"Chinese {kind} speaker order must be {', '.join(expected_order)}."
+            )
         if item.get("kind") != kind:
             raise ValueError(f"Chinese {kind} section contains a different segment kind.")
         text = item.get("spoken_text")
         if not isinstance(text, str) or not text.strip():
             raise ValueError(f"Every Chinese {kind} segment needs spoken text.")
         text = text.strip()
-        if len(text) > MAX_SPOKEN_SEGMENT_CHARS:
-            raise ValueError(f"Chinese spoken segments must be at most {MAX_SPOKEN_SEGMENT_CHARS} characters.")
+        if readable_length(text) > MAX_WRAPPER_SEGMENT_CHARS:
+            raise ValueError(
+                f"Every Chinese wrapper turn must be at most {MAX_WRAPPER_SEGMENT_CHARS} readable characters."
+            )
         total_chars += readable_length(text)
         ids = item.get("source_paragraph_ids")
         if not isinstance(ids, list) or any(not isinstance(source_id, str) or source_id not in known_set for source_id in ids):
@@ -222,32 +242,98 @@ def wrapper_issues(
             issues.append({"section": kind, "reason": "; ".join(reasons)})
     if total_chars > max_chars:
         raise ValueError(f"Chinese {kind} must be at most {max_chars} readable characters.")
+
+    opening_source_ids = set(known[:2])
+    closing_source_ids = set(known[-3:])
+    if kind == "opening":
+        if TEMPLATE_OPENING.search(block[0]["spoken_text"]):
+            issues.append({"section": kind, "reason": "opening hook uses prohibited programme boilerplate"})
+        for position in (0, 1):
+            ids = block[position]["source_paragraph_ids"]
+            if not ids or not set(ids) <= opening_source_ids:
+                issues.append({
+                    "section": kind,
+                    "reason": f"opening turn {position + 1} must cite only the first two source paragraphs",
+                })
+        if not block[1]["spoken_text"].rstrip().endswith(("？", "?")):
+            issues.append({"section": kind, "reason": "opening turn 2 must be a natural question"})
+    else:
+        factual_ids = block[0]["source_paragraph_ids"]
+        if not factual_ids or not set(factual_ids) <= closing_source_ids:
+            issues.append({
+                "section": kind,
+                "reason": "closing turn 1 must cite only the final three source paragraphs",
+            })
+        if block[1]["source_paragraph_ids"]:
+            issues.append({
+                "section": kind,
+                "reason": "closing turn 2 must be a separate generic sign-off with empty source links",
+            })
     return issues
+
+
+def normalized_spoken_text(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z\u3400-\u9fff]+", "", value).casefold()
+
+
+def opening_body_duplication_issue(
+    opening: list[dict[str, Any]], body: list[dict[str, Any]],
+) -> dict[str, str] | None:
+    """Reject a hook that simply reads the first factual body turn again."""
+    if not opening:
+        return None
+    first_factual = next((item for item in body if item.get("kind") in FACTUAL_KINDS), None)
+    if first_factual is None:
+        return None
+    hook = normalized_spoken_text(opening[0]["spoken_text"])
+    first_body = normalized_spoken_text(first_factual["spoken_text"])
+    if not hook or not first_body:
+        return None
+    shorter, longer = sorted((hook, first_body), key=len)
+    contained = len(shorter) >= 12 and shorter in longer
+    similarity = difflib.SequenceMatcher(None, hook, first_body).ratio()
+    if contained or similarity >= 0.92:
+        return {"section": "opening", "reason": "opening hook repeats the first factual body turn"}
+    return None
 
 
 def request_payload(article: dict[str, Any], paragraphs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "source_sha256": article["source_sha256"],
         "language": "zh-CN",
+        "script_policy_version": CHINESE_SCRIPT_POLICY_VERSION,
         "instructions": CHINESE_STYLE_INSTRUCTIONS,
         "speaker_balance": {
             "target_character_share": {speaker: 0.5 for speaker in sorted(SPEAKERS)},
             "acceptable_character_share": {"minimum": MIN_WORD_SHARE, "maximum": MAX_WORD_SHARE},
             "max_consecutive_segments": MAX_CONSECUTIVE_SEGMENTS,
-            "interaction_policy": "Source-linked prompt/reaction segments are allowed; unsupported host commentary is forbidden.",
+            "interaction_policy": {
+                "minimum_source_paragraphs": LONG_ARTICLE_MIN_PARAGRAPHS,
+                "required_prompt_answer_pairs": REQUIRED_LONG_ARTICLE_INTERACTIONS,
+                "distribution": "one pair in each source-paragraph quarter",
+                "answer_speaker": "other_host",
+            },
         },
         "framing": {
             "output_shape": "object with opening, body and closing arrays",
             "opening": {
-                "speaker_id": "primary",
+                "speaker_order": list(OPENING_SPEAKER_ORDER),
                 "kind": "opening",
+                "segments": len(OPENING_SPEAKER_ORDER),
+                "max_readable_characters_per_segment": MAX_WRAPPER_SEGMENT_CHARS,
                 "max_readable_characters": MAX_OPENING_CHARS,
+                "hook_source_paragraph_ids": [paragraph_id(item) for item in paragraphs[:2]],
+                "prohibited_starts": ["欢迎收听", "本期节目", "今天我们来聊"],
                 "source_policy": "Empty source links are allowed only for generic programme framing; article facts require one or more source paragraph IDs.",
             },
             "closing": {
-                "speaker_id": "secondary",
+                "speaker_order": list(CLOSING_SPEAKER_ORDER),
                 "kind": "closing",
+                "segments": len(CLOSING_SPEAKER_ORDER),
+                "max_readable_characters_per_segment": MAX_WRAPPER_SEGMENT_CHARS,
                 "max_readable_characters": MAX_CLOSING_CHARS,
+                "summary_source_paragraph_ids": [paragraph_id(item) for item in paragraphs[-3:]],
+                "signoff_source_paragraph_ids": [],
                 "source_policy": "Empty source links are allowed only for generic programme framing; article facts require one or more source paragraph IDs.",
             },
         },
@@ -353,6 +439,39 @@ def validate_sequence(paragraphs: list[dict[str, Any]], grouped: dict[str, list[
             raise ValueError("Chinese host character balance failed: " + json.dumps({"counts": counts, "shares": shares}, ensure_ascii=False))
 
 
+def interaction_quarter(paragraph_index: int, paragraph_count: int) -> int:
+    return min(3, (paragraph_index * 4) // paragraph_count)
+
+
+def validate_long_article_interactions(
+    paragraphs: list[dict[str, Any]], grouped: dict[str, list[dict[str, Any]]],
+) -> None:
+    if len(paragraphs) < LONG_ARTICLE_MIN_PARAGRAPHS:
+        return
+    prompt_pairs: list[dict[str, Any]] = []
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        source_id = paragraph_id(paragraph)
+        segments = grouped[source_id]
+        for segment_index, item in enumerate(segments[:-1]):
+            answer = segments[segment_index + 1]
+            if (
+                item["kind"] == "prompt"
+                and answer["kind"] in FACTUAL_KINDS
+                and answer["speaker_id"] != item["speaker_id"]
+            ):
+                prompt_pairs.append({
+                    "source_paragraph_id": source_id,
+                    "quarter": interaction_quarter(paragraph_index, len(paragraphs)) + 1,
+                })
+    covered = {item["quarter"] for item in prompt_pairs}
+    if len(prompt_pairs) < REQUIRED_LONG_ARTICLE_INTERACTIONS or covered != {1, 2, 3, 4}:
+        raise ValueError(
+            "Chinese scripts with 20 or more paragraphs need four prompt-to-other-host factual-answer "
+            "pairs, including one in each source-paragraph quarter: "
+            + json.dumps({"pairs": prompt_pairs, "covered_quarters": sorted(covered)}, ensure_ascii=False)
+        )
+
+
 def validate_speaker_runs(items: list[dict[str, Any]]) -> None:
     run: list[dict[str, Any]] = []
     for item in items:
@@ -407,8 +526,12 @@ def finalize_chinese(paragraphs: list[dict[str, Any]], candidate: Any) -> list[d
         closing_issues = wrapper_issues(closing, "closing", paragraphs)
     grouped = grouped_candidate(paragraphs, body)
     validate_sequence(paragraphs, grouped)
+    validate_long_article_interactions(paragraphs, grouped)
     validate_speaker_runs(opening + flattened_body(paragraphs, grouped) + closing)
     issues = opening_issues + closing_issues + chinese_lint_issues(paragraphs, grouped) + number_issues(paragraphs, grouped)
+    duplication = opening_body_duplication_issue(opening, flattened_body(paragraphs, grouped))
+    if duplication:
+        issues.append(duplication)
     if issues:
         raise ValueError("Chinese writing validation failed: " + json.dumps(issues, ensure_ascii=False))
     result: list[dict[str, Any]] = []
@@ -444,6 +567,66 @@ def finalize_chinese(paragraphs: list[dict[str, Any]], candidate: Any) -> list[d
     return result
 
 
+def framing_quality_result(
+    paragraphs: list[dict[str, Any]],
+    opening: list[dict[str, Any]],
+    body: list[dict[str, Any]],
+    closing: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "policy_version": CHINESE_SCRIPT_POLICY_VERSION,
+        "status": "passed" if opening else "legacy_body_only",
+        "opening": {
+            "segments": len(opening),
+            "speaker_order": [item["speaker_id"] for item in opening],
+            "hook_source_linked": bool(opening and opening[0]["source_paragraph_ids"]),
+            "core_question": bool(len(opening) > 1 and opening[1]["spoken_text"].rstrip().endswith(("？", "?"))),
+            "template_start_rejected": bool(opening and not TEMPLATE_OPENING.search(opening[0]["spoken_text"])),
+            "distinct_from_first_body": opening_body_duplication_issue(opening, body) is None,
+        },
+        "closing": {
+            "segments": len(closing),
+            "speaker_order": [item["speaker_id"] for item in closing],
+            "summary_source_linked": bool(closing and closing[0]["source_paragraph_ids"]),
+            "signoff_separate_and_generic": bool(len(closing) > 1 and not closing[1]["source_paragraph_ids"]),
+        },
+        "interactions": interaction_quality_result(paragraphs, body),
+    }
+
+
+def interaction_quality_result(
+    paragraphs: list[dict[str, Any]], body: list[dict[str, Any]],
+) -> dict[str, Any]:
+    paragraph_positions = {paragraph_id(item): index for index, item in enumerate(paragraphs)}
+    pairs: list[dict[str, Any]] = []
+    for index, item in enumerate(body[:-1]):
+        answer = body[index + 1]
+        if (
+            item.get("kind") == "prompt"
+            and answer.get("kind") in FACTUAL_KINDS
+            and item.get("speaker_id") != answer.get("speaker_id")
+            and item.get("source_paragraph_ids") == answer.get("source_paragraph_ids")
+        ):
+            source_id = item["source_paragraph_ids"][0]
+            if source_id in paragraph_positions:
+                pairs.append({
+                    "prompt_segment_id": item.get("segment_id"),
+                    "answer_segment_id": answer.get("segment_id"),
+                    "source_paragraph_id": source_id,
+                    "quarter": interaction_quarter(paragraph_positions[source_id], len(paragraphs)) + 1,
+                })
+    required = len(paragraphs) >= LONG_ARTICLE_MIN_PARAGRAPHS
+    covered = sorted({item["quarter"] for item in pairs})
+    return {
+        "required": required,
+        "required_pairs": REQUIRED_LONG_ARTICLE_INTERACTIONS if required else 0,
+        "pair_count": len(pairs),
+        "covered_quarters": covered,
+        "status": "passed" if not required or (len(pairs) >= 4 and covered == [1, 2, 3, 4]) else "failed",
+        "pairs": pairs,
+    }
+
+
 def validate_final_script(article_path: Path, script_path: Path) -> dict[str, Any]:
     article, paragraphs = SHARED.load_article(article_path)
     script = read_json(script_path)
@@ -453,7 +636,15 @@ def validate_final_script(article_path: Path, script_path: Path) -> dict[str, An
     if expected != script:
         raise ValueError("The Chinese script is not in canonical finalizer form.")
     characters = sum(len(item["spoken_text"]) for item in script)
-    return {"status": "valid", "language": "zh-CN", "segments": len(script), "characters": characters, "estimated_seconds": round((characters / 260) * 60, 1), "source_sha256": article["source_sha256"]}
+    return {
+        "status": "valid",
+        "language": "zh-CN",
+        "segments": len(script),
+        "characters": characters,
+        "estimated_seconds": round((characters / 260) * 60, 1),
+        "source_sha256": article["source_sha256"],
+        "framing_quality": framing_quality_result(paragraphs, opening, body, closing),
+    }
 
 
 def retry_sections(script: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -561,22 +752,135 @@ def apply_retry(paragraphs: list[dict[str, Any]], script: Any, patch: Any) -> li
     return finalize_chinese(paragraphs, candidate)
 
 
+def framing_polish_payload(
+    article: dict[str, Any], paragraphs: list[dict[str, Any]], candidate: Any,
+) -> dict[str, Any]:
+    """Build a compact one-pass wrapper-only polish request without the full article."""
+    opening, body, closing = retry_sections(candidate)
+    if not opening or not closing or not body:
+        raise ValueError("Framing polish requires existing opening, body and closing sections.")
+    known = {paragraph_id(item): item for item in paragraphs}
+    cited_ids = list(dict.fromkeys(
+        source_id
+        for item in [*opening, *closing]
+        for source_id in item.get("source_paragraph_ids", [])
+        if source_id in known
+    ))
+    required_context_ids = [paragraph_id(item) for item in paragraphs[:2]] + [
+        paragraph_id(item) for item in paragraphs[-3:]
+    ]
+    source_ids = list(dict.fromkeys([*cited_ids, *required_context_ids]))
+    return {
+        "source_sha256": article["source_sha256"],
+        "language": "zh-CN",
+        "script_policy_version": CHINESE_SCRIPT_POLICY_VERSION,
+        "attempt": 1,
+        "instructions": (
+            "Return only an object with opening and closing arrays. Rewrite only those wrappers once; "
+            "do not rewrite the body or add facts. Make the hook concrete, the second turn a natural core "
+            "question, the third turn a clean bridge, the first closing turn distinguish what is known from "
+            "what remains unsettled and recall the opening, and the final turn a separate natural sign-off."
+        ),
+        "quality_checks": [
+            "concrete source-linked hook",
+            "source-linked core question",
+            "non-factual route into body",
+            "known-versus-unsettled conclusion status",
+            "opening-to-closing callback",
+            "fact summary separated from generic sign-off",
+        ],
+        "current": {"opening": opening, "closing": closing},
+        "source_context": [
+            {"source_paragraph_id": source_id, "source_text": SHARED.chinese_translation_source(known[source_id]["text"])}
+            for source_id in source_ids
+        ],
+        "body_context": {
+            "first_segment": body[0],
+            "last_segment": body[-1],
+        },
+        "output_contract": {
+            "opening_segments": len(OPENING_SPEAKER_ORDER),
+            "opening_speaker_order": list(OPENING_SPEAKER_ORDER),
+            "closing_segments": len(CLOSING_SPEAKER_ORDER),
+            "closing_speaker_order": list(CLOSING_SPEAKER_ORDER),
+            "max_readable_characters_per_segment": MAX_WRAPPER_SEGMENT_CHARS,
+            "opening_max_readable_characters": MAX_OPENING_CHARS,
+            "closing_max_readable_characters": MAX_CLOSING_CHARS,
+        },
+    }
+
+
+def apply_framing_polish(
+    paragraphs: list[dict[str, Any]], candidate: Any, polished: Any,
+) -> list[dict[str, Any]]:
+    opening, body, closing = retry_sections(candidate)
+    if not isinstance(polished, dict) or set(polished) != {"opening", "closing"}:
+        raise ValueError("Framing polish must return only opening and closing arrays.")
+    if not isinstance(polished["opening"], list) or not isinstance(polished["closing"], list):
+        raise ValueError("Framing polish opening and closing values must be arrays.")
+    return finalize_chinese(paragraphs, {
+        "opening": polished["opening"],
+        "body": body,
+        "closing": polished["closing"],
+    })
+
+
 def chinese_editorial_request(article_path: Path) -> dict[str, Any]:
     payload = SHARED.editorial_request(article_path)
     payload["language"] = "zh-CN"
     payload["instructions"] = (
         "Return only the editorial draft JSON. The spoken and visible product is Chinese-first. "
         "Write natural Chinese display text, two Chinese guide-question translations, Chinese publication copy and three distinct Chinese cover lines. "
+        "The publication title_body_zh must be a content-based editorial distillation, not a direct Chinese translation of the English headline. "
         "The English question fields are compatibility metadata only and must remain source-linked. "
         "Do not add facts, predictions, explanations or conclusions.\n\n"
         + payload["instructions"]
     )
-    payload["draft_schema"]["publication"]["title_zh"] = "《经济学人》：… | 外刊播客 | 中文字幕"
     return payload
 
 
 def init_production(article: Path, production: Path, region: str, aspect_ratios: list[str] | None) -> None:
     SHARED.init_production(article, production, "zh-CN", region, aspect_ratios)
+    payload = read_json(production)
+    payload.setdefault("script_generation", {}).update({
+        "policy_version": CHINESE_SCRIPT_POLICY_VERSION,
+        "policy": "source_bounded_chinese_two_host_structure",
+        "framing_polish_retry_limit": 1,
+    })
+    payload["creative_frame"] = {
+        "enabled": True,
+        "source_policy": "source_bounded_delivery_only",
+        "opening": {
+            "segments": len(OPENING_SPEAKER_ORDER),
+            "speaker_order": list(OPENING_SPEAKER_ORDER),
+            "max_readable_characters_per_segment": MAX_WRAPPER_SEGMENT_CHARS,
+            "max_readable_characters": MAX_OPENING_CHARS,
+        },
+        "closing": {
+            "segments": len(CLOSING_SPEAKER_ORDER),
+            "speaker_order": list(CLOSING_SPEAKER_ORDER),
+            "max_readable_characters_per_segment": MAX_WRAPPER_SEGMENT_CHARS,
+            "max_readable_characters": MAX_CLOSING_CHARS,
+        },
+        "long_article_interactions": {
+            "minimum_source_paragraphs": LONG_ARTICLE_MIN_PARAGRAPHS,
+            "required_prompt_answer_pairs": REQUIRED_LONG_ARTICLE_INTERACTIONS,
+            "distribution": "source_paragraph_quarters",
+        },
+    }
+    payload.setdefault("background_music", {}).setdefault("zh-CN", {}).update({
+        "required": True,
+        "match_english_default": True,
+        "mix_policy": "local_window_ducking_v1",
+    })
+    payload.setdefault("video", {}).setdefault("image_rotation", {}).update({
+        "opening_duration_seconds": 8.0,
+        "target_dwell_seconds": 20.0,
+        "minimum_dwell_seconds": 18.0,
+        "maximum_dwell_seconds": 22.0,
+        "order": "source_round_robin",
+    })
+    write_json(production, payload)
 
 
 def main() -> int:
@@ -596,6 +900,14 @@ def main() -> int:
     validate = commands.add_parser("validate")
     validate.add_argument("article", type=Path)
     validate.add_argument("script", type=Path)
+    polish_request = commands.add_parser("framing-polish-request")
+    polish_request.add_argument("article", type=Path)
+    polish_request.add_argument("candidate", type=Path)
+    polish_apply = commands.add_parser("apply-framing-polish")
+    polish_apply.add_argument("article", type=Path)
+    polish_apply.add_argument("candidate", type=Path)
+    polish_apply.add_argument("polished", type=Path)
+    polish_apply.add_argument("output", type=Path)
     retry = commands.add_parser("retry-request")
     retry.add_argument("article", type=Path)
     retry.add_argument("script", type=Path)
@@ -631,6 +943,23 @@ def main() -> int:
             result = {"status": "created", "script": str(args.output.resolve()), "segments": len(segments)}
         elif args.command == "validate":
             result = validate_final_script(args.article, args.script)
+        elif args.command == "framing-polish-request":
+            article, paragraphs = SHARED.load_article(args.article)
+            print(json.dumps(
+                framing_polish_payload(article, paragraphs, read_json(args.candidate)),
+                ensure_ascii=False,
+                indent=2,
+            ))
+            return 0
+        elif args.command == "apply-framing-polish":
+            _, paragraphs = SHARED.load_article(args.article)
+            polished = apply_framing_polish(
+                paragraphs,
+                read_json(args.candidate),
+                read_json(args.polished),
+            )
+            write_json(args.output, polished)
+            result = {"status": "created", "script": str(args.output.resolve()), "segments": len(polished)}
         elif args.command == "retry-request":
             article, paragraphs = SHARED.load_article(args.article)
             print(json.dumps(retry_payload(article, paragraphs, read_json(args.script), args.attempt), ensure_ascii=False, indent=2))

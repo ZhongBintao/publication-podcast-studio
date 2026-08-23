@@ -27,6 +27,16 @@ def audio(frame_count, value, sample_rate=10):
     return MODULE.read_wav_bytes(output.getvalue())
 
 
+def audio_samples(values, sample_rate=1000):
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(struct.pack("<h", value) for value in values))
+    return MODULE.read_wav_bytes(output.getvalue())
+
+
 def samples(track):
     return [value[0] for value in struct.iter_unpack("<h", track.frames)]
 
@@ -80,6 +90,21 @@ class BackgroundMusicTests(unittest.TestCase):
         self.assertLess(report["background_scale"], 1.0)
         self.assertEqual(samples(mixed), [32767, 32767])
 
+    def test_full_scale_voice_window_does_not_globally_mute_background(self):
+        voice_values = [1000] * 400
+        voice_values[25] = 32767
+        voice = audio_samples(voice_values)
+        background = audio_samples([4000] * 400)
+        mixed, effective, report = MODULE.mix_audio_tracks(
+            voice, background, return_report=True, return_background=True,
+        )
+        self.assertEqual(report["strategy"], "local_window_ducking_v1")
+        self.assertEqual(report["background_scale_min"], 0.0)
+        self.assertGreater(report["background_scale_average"], 0.0)
+        self.assertGreater(max(abs(value) for value in samples(effective)[80:]), 0)
+        self.assertNotEqual(mixed.frames, voice.frames)
+        self.assertEqual(report["clipped_sample_count"], 0)
+
     def test_add_background_music_writes_two_tracks_and_production_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -89,9 +114,9 @@ class BackgroundMusicTests(unittest.TestCase):
             opening = root / "opening.wav"
             middle = root / "middle.wav"
             ending = root / "ending.wav"
-            MODULE.write_wav(opening, audio(80, 1))
-            MODULE.write_wav(middle, audio(4, 2))
-            MODULE.write_wav(ending, audio(60, 3))
+            MODULE.write_wav(opening, audio(80, 4000))
+            MODULE.write_wav(middle, audio(4, 4500))
+            MODULE.write_wav(ending, audio(60, 4000))
             production = root / "production.json"
             production.write_text(json.dumps({
                 "variant": "en",
@@ -113,6 +138,8 @@ class BackgroundMusicTests(unittest.TestCase):
             self.assertEqual(persisted["background_music"]["en"]["state"], "complete")
             self.assertEqual(persisted["background_music"]["en"]["gains_db"], {"opening": 8.0, "middle": 10.0, "ending": 8.0})
             self.assertIn("peak_protection", persisted["background_music"]["en"])
+            self.assertEqual(persisted["background_music"]["en"]["mix_policy"], "local_window_ducking_v1")
+            self.assertEqual(persisted["background_music"]["en"]["audibility"]["status"], "passed")
 
     def test_legacy_uniform_gain_remains_available(self):
         production = {"background_music": {"en": {"gain_db": -18}}}

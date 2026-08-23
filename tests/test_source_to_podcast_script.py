@@ -291,6 +291,30 @@ class SourceToPodcastScriptTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "frozen production seed"):
                 MODULE.validate_frozen_speaker_schedule(article, paragraphs, final, production_path)
 
+    def test_frozen_seed_validation_keeps_framed_wrappers_outside_body_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            production_path = root / "production.json"
+            article_path.write_text(json.dumps(self.article), encoding="utf-8")
+            MODULE.init_production(article_path, production_path, "en", "region", ["16:9"], 2468)
+            article, paragraphs = MODULE.load_article(article_path)
+            candidate = {
+                "opening": [{
+                    "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
+                    "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
+                }],
+                "body": self.build_body_candidate(),
+                "closing": [{
+                    "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
+                    "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
+                }],
+            }
+            final = MODULE.finalize_english(paragraphs, candidate, 2468)
+            MODULE.validate_frozen_speaker_schedule(article, paragraphs, final, production_path)
+            self.assertEqual(final[0]["speaker_id"], "primary")
+            self.assertEqual(final[-1]["speaker_id"], "secondary")
+
     def test_finalizer_ignores_draft_speaker_ids_and_fixed_wrappers(self):
         candidate = {
             "opening": [{

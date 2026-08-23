@@ -7,9 +7,11 @@ and typographic. Every frame uses the same #262626 field and a contained
 magazine-image slot that preserves the source aspect ratio. The vertical
 opening is a compact free-flow stack; the opening metadata yields to two
 bilingual guide questions without decorative dividers or top utility labels.
-The verified article image is preferred over the issue cover when the package
-contains one. The opening carries the publication mark, but no page or
-read-time field.
+The opening always uses the verified magazine issue cover. Content slides then
+rotate through verified article photos and charts in strict source-order
+round-robin at a 20-second target and normal 18–22 second dwell. Every image
+has a 3 px white frame around its actual contained-image edge. The opening
+carries the publication mark, but no page or read-time field.
 No texture, gradient, decorative animation, shadow or generated imagery is
 permitted.
 
@@ -53,6 +55,8 @@ permitted.
 - Do not overlay captions on source imagery.
 - Do not add motion, music, sound effects, avatars or synthetic images.
 - Do not crop, stretch or distort a source image; letterboxing is acceptable.
+- Do not draw the white image frame around the letterbox slot; frame the actual
+  contained image.
 - Do not render top utility labels or decorative divider lines in portrait.
 - Do not place captions or metadata in the bottom 10% platform-detail area.
 - Do not derive captions from ASR; only render the approved canonical SRT.

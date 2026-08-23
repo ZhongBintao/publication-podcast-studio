@@ -41,6 +41,8 @@ MIN_CUE_SECONDS = 1.5
 MAX_CUE_SECONDS = 7.0
 MAX_ENGLISH_CHARS = 84
 MAX_CHINESE_CHARS = 48
+CAPTION_BREAK_PUNCTUATION = frozenset(",.;:!?，、；：。！？")
+SENTENCE_BREAK_PUNCTUATION = frozenset(".!?。！？")
 
 
 class MediaError(RuntimeError):
@@ -550,27 +552,68 @@ def cue_text(text: str, start: int, end: int) -> str:
     return re.sub(r"\s+", " ", text[start:end]).strip()
 
 
+def caption_character_limit(language: str) -> int:
+    # CJK captions with embedded Latin names are visibly wider than their
+    # character count suggests. Stay below the published 48-character maximum
+    # so the portrait two-line rail remains legible without truncation.
+    return 40 if language == "zh-CN" else MAX_ENGLISH_CHARS
+
+
+def cue_end_offset(text: str, words: list[dict[str, Any]], word_index: int) -> int:
+    """Include punctuation between this word and the next spoken word."""
+    if word_index + 1 < len(words):
+        return int(words[word_index + 1]["text_offset"])
+    return len(text)
+
+
+def preferred_caption_break(text: str, words: list[dict[str, Any]], word_index: int) -> bool:
+    word_end = int(words[word_index]["text_offset"]) + int(words[word_index]["word_length"])
+    trailing = text[word_end:cue_end_offset(text, words, word_index)]
+    return any(character in CAPTION_BREAK_PUNCTUATION for character in trailing)
+
+
+def sentence_caption_break(text: str, words: list[dict[str, Any]], word_index: int) -> bool:
+    word_end = int(words[word_index]["text_offset"]) + int(words[word_index]["word_length"])
+    trailing = text[word_end:cue_end_offset(text, words, word_index)]
+    return any(character in SENTENCE_BREAK_PUNCTUATION for character in trailing)
+
+
 def script_cues(alignment: dict[str, Any], language: str) -> list[dict[str, Any]]:
+    """Build readable approved-script cues from WordBoundary spans.
+
+    Azure word events omit punctuation for Chinese and DragonHD voices.  Split
+    against the approved script's inter-word spans instead of expecting a
+    punctuation event, preserving that punctuation on the preceding cue.
+    """
     groups: list[dict[str, Any]] = []
+    character_limit = caption_character_limit(language)
     for segment in alignment["segments"]:
         text = segment["spoken_text"]
-        current: list[dict[str, Any]] = []
-
-        def flush() -> None:
-            if not current:
-                return
-            start_offset = current[0]["text_offset"]
-            end_offset = current[-1]["text_offset"] + current[-1]["word_length"]
-            start = current[0]["start_seconds"]
-            end = current[-1]["end_seconds"]
-            groups.append({"start_seconds": start, "end_seconds": end, "text": cue_text(text, start_offset, end_offset)})
-            current.clear()
-
-        for word in segment["words"]:
-            current.append(word)
-            if word["text"].endswith((".", "!", "?", "。", "！", "？")):
-                flush()
-        flush()
+        words = list(segment["words"])
+        first_word = 0
+        while first_word < len(words):
+            start_offset = int(words[first_word]["text_offset"])
+            last_fitting: int | None = None
+            preferred: list[int] = []
+            for word_index in range(first_word, len(words)):
+                displayed = cue_text(text, start_offset, cue_end_offset(text, words, word_index))
+                if len(displayed) > character_limit:
+                    break
+                last_fitting = word_index
+                if preferred_caption_break(text, words, word_index):
+                    preferred.append(word_index)
+                if sentence_caption_break(text, words, word_index):
+                    break
+            if last_fitting is None:
+                raise MediaError("An approved caption token exceeds the readable character limit.")
+            word_index = preferred[-1] if preferred else last_fitting
+            end_offset = cue_end_offset(text, words, word_index)
+            groups.append({
+                "start_seconds": words[first_word]["start_seconds"],
+                "end_seconds": words[word_index]["end_seconds"],
+                "text": cue_text(text, start_offset, end_offset),
+            })
+            first_word = word_index + 1
     return normalize_cues(groups)
 
 
@@ -835,7 +878,7 @@ def validate_translation(value: Any) -> list[dict[str, Any]]:
 
 def failure(production_path: Path, production: dict[str, Any], error: Exception) -> None:
     production["state"] = "failed"
-    reason = str(error) if isinstance(error, (MediaError, ValueError)) else "Unexpected media-processing failure."
+    reason = str(error) if isinstance(error, (MediaError, BackgroundMusicError, ValueError)) else "Unexpected media-processing failure."
     production.setdefault("failures", []).append({"stage": "azure-speech-media", "reason": reason})
     write_json(production_path, production)
 
@@ -883,22 +926,36 @@ def materialize_reviewed_bilingual_captions(root: Path, production: dict[str, An
 
 
 def rebuild_captions(production_path: Path) -> dict[str, Any]:
-    """Rebuild reviewed en-zh captions from local script and WordBoundary artifacts only."""
+    """Rebuild selected-variant captions from local WordBoundary artifacts only."""
     production = read_json(production_path)
-    if production.get("variant") != "en-zh":
-        raise MediaError("Local caption rebuild is only required for the en-zh variant.")
+    variant = production.get("variant")
+    if variant not in VARIANTS:
+        raise MediaError("production.json needs one supported variant.")
     root = production_path.parent.resolve()
-    alignment_reference = production.get("artifacts", {}).get("alignment_en")
+    language = selected_language(variant)
+    suffix = "zh_cn" if language == "zh-CN" else "en"
+    alignment_reference = production.get("artifacts", {}).get(f"alignment_{suffix}")
     if not isinstance(alignment_reference, str):
-        raise MediaError("production.json has no English WordBoundary alignment.")
+        raise MediaError("production.json has no selected-language WordBoundary alignment.")
     alignment_path = root / alignment_reference
     if not alignment_path.is_file():
-        raise MediaError("English WordBoundary alignment is missing.")
-    materialize_reviewed_bilingual_captions(root, production, read_json(alignment_path))
+        raise MediaError("Selected-language WordBoundary alignment is missing.")
+    alignment = read_json(alignment_path)
+    if variant == "en-zh":
+        materialize_reviewed_bilingual_captions(root, production, alignment)
+    else:
+        cues = script_cues(alignment, language)
+        base = "captions.zh-CN" if language == "zh-CN" else "captions.en"
+        caption_paths = write_captions(root, base, cues)
+        artifacts = production.setdefault("artifacts", {})
+        artifacts.update({
+            f"captions_{suffix}_srt": relative_path(Path(caption_paths["srt"]), root),
+            f"captions_{suffix}_vtt": relative_path(Path(caption_paths["vtt"]), root),
+        })
     production["state"] = "complete"
     production["failures"] = []
     write_json(production_path, production)
-    return {"status": "complete", "variant": "en-zh", "artifacts": production["artifacts"]}
+    return {"status": "complete", "variant": variant, "artifacts": production["artifacts"]}
 
 
 def load_cached_segment(cache_audio: Path, cache_meta: Path, fingerprint: str) -> dict[str, Any] | None:
@@ -908,6 +965,39 @@ def load_cached_segment(cache_audio: Path, cache_meta: Path, fingerprint: str) -
     if meta.get("input_sha256") != fingerprint:
         return None
     return {"audio": cache_audio.read_bytes(), "word_boundaries": meta.get("word_boundaries")}
+
+
+def load_cached_segment_by_fingerprint(
+    work: Path, cache_audio: Path, cache_meta: Path, fingerprint: str,
+) -> dict[str, Any] | None:
+    """Reuse unchanged synthesis after wrapper insertions renumber body segments."""
+    direct = load_cached_segment(cache_audio, cache_meta, fingerprint)
+    if direct is not None:
+        return direct
+    for candidate_meta in sorted(work.glob("*.json")):
+        if candidate_meta == cache_meta:
+            continue
+        try:
+            metadata = read_json(candidate_meta)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if metadata.get("input_sha256") != fingerprint:
+            continue
+        candidate_audio = candidate_meta.with_suffix(".wav")
+        if not candidate_audio.is_file():
+            continue
+        cached = {
+            "audio": candidate_audio.read_bytes(),
+            "word_boundaries": metadata.get("word_boundaries"),
+        }
+        cache_audio.write_bytes(cached["audio"])
+        write_json(cache_meta, {
+            "input_sha256": fingerprint,
+            "word_boundaries": cached["word_boundaries"],
+            "reused_from_segment_cache": candidate_meta.stem,
+        })
+        return cached
+    return None
 
 
 def run_media(production_path: Path, provider: Any | None = None) -> dict[str, Any]:
@@ -951,7 +1041,7 @@ def run_media(production_path: Path, provider: Any | None = None) -> dict[str, A
             })
             cache_audio = work / f"{segment['segment_id']}.wav"
             cache_meta = work / f"{segment['segment_id']}.json"
-            raw = load_cached_segment(cache_audio, cache_meta, fingerprint)
+            raw = load_cached_segment_by_fingerprint(work, cache_audio, cache_meta, fingerprint)
             if raw is None:
                 raw = provider.synthesize(
                     language,
@@ -1064,9 +1154,12 @@ def run_media(production_path: Path, provider: Any | None = None) -> dict[str, A
         write_json(production_path, production)
         return {"status": "complete", "variant": variant, "artifacts": artifacts}
     except Exception as error:
-        failure(production_path, production, error)
+        latest = read_json(production_path) if production_path.is_file() else production
+        failure(production_path, latest, error)
         if isinstance(error, MediaError):
             raise
+        if isinstance(error, BackgroundMusicError):
+            raise MediaError(str(error)) from error
         raise MediaError("Media production failed.") from error
 
 

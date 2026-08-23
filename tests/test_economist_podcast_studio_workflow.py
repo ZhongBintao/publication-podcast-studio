@@ -109,6 +109,8 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             report = MODULE.run_workflow(root, "en-zh", ["9:16"], "default", True, 1.0)
             self.assertEqual(report["state"], "complete")
             self.assertEqual(report["external_api_calls"], [])
+            self.assertEqual(report["quality"]["background_music"]["en-zh"]["status"], "legacy_not_enforced")
+            self.assertIn("media_rotation", report["quality"])
             output = root / "video" / "en-zh" / "default" / "9x16" / "final.mp4"
             self.assertTrue(output.is_file())
             self.assertEqual(json.loads((root / "production.json").read_text())["output"]["aspect_ratios"], ["16:9", "9:16"])

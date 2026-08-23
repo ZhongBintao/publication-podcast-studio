@@ -85,7 +85,11 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             self.assertEqual(persisted["video"]["outputs"]["en-zh/default/9:16"]["path"], "video/en-zh/default/9x16/final.mp4")
             report = root / persisted["video"]["outputs"]["en-zh/default/9:16"]["render_report"]
             self.assertTrue(report.is_file())
-            self.assertTrue(json.loads(report.read_text(encoding="utf-8"))["frames"])
+            report_payload = json.loads(report.read_text(encoding="utf-8"))
+            self.assertTrue(report_payload["frames"])
+            self.assertEqual(report_payload["frames"][0]["asset"]["role"], "issue_cover")
+            Image.new("RGB", (600, 800), "#173f64").save(root / "assets" / "issue-cover.png")
+            self.assertFalse(MODULE.render_storyboard(production, storyboard_path, "9:16")[1])
 
     def test_missing_slide_asset_blocks_rendering(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -95,7 +99,7 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             storyboard = MODULE.build_storyboard(production, questions, storyboard_path, 1.0)
             storyboard["slides"][1]["asset"]["file"] = "assets/missing.png"
             storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
-            with self.assertRaisesRegex(MODULE.StoryboardError, "asset for guide-questions is missing"):
+            with self.assertRaisesRegex(MODULE.StoryboardError, "asset for content-001 is missing"):
                 MODULE.render_storyboard(production, storyboard_path, "16:9")
 
     def test_editorial_assets_are_accepted_in_place_of_legacy_question_payload(self):
@@ -113,23 +117,87 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.StoryboardError, "does not belong"):
                 MODULE.build_storyboard(production, editorial_assets, root / "other-storyboard.json", 1.0)
 
-    def test_verified_article_image_is_selected_and_read_time_is_not_emitted(self):
+    def test_issue_cover_opens_then_verified_article_media_rotate_and_read_time_is_not_emitted(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             production, questions = self.make_package(root)
             Image.new("RGB", (667, 938), "#29616c").save(root / "assets" / "article.png")
+            Image.new("RGB", (900, 500), "#d1aa38").save(root / "assets" / "chart.png")
             article_path = root / "article.json"
             article = json.loads(article_path.read_text(encoding="utf-8"))
             article["article_pages"] = [69, 70]
-            article["assets"] = [{"role": "article_image", "file": "assets/article.png"}]
+            article["assets"] = [
+                {"id": "photo", "order": 1, "role": "article_image", "file": "assets/article.png"},
+                {"id": "chart", "order": 2, "kind": "article_chart", "file": "assets/chart.png"},
+            ]
             article_path.write_text(json.dumps(article), encoding="utf-8")
             storyboard = MODULE.build_storyboard(production, questions, root / "storyboard.json", 1.0)
-            self.assertEqual(storyboard["slides"][0]["asset"], {"role": "article_asset", "file": "assets/article.png"})
+            self.assertEqual(storyboard["schema_version"], "1.1.0")
+            self.assertEqual(storyboard["slides"][0]["asset"], {"role": "issue_cover", "id": "issue-cover", "file": "assets/issue-cover.png"})
+            self.assertEqual(
+                [slide["asset"]["file"] for slide in storyboard["slides"][1:]],
+                ["assets/article.png", "assets/chart.png"],
+            )
+            self.assertTrue(all(slide["template_role"] == "guide_questions" for slide in storyboard["slides"][1:]))
             content = MODULE.display_content(article, storyboard, "English cue.", "中文 cue。")
             self.assertNotIn("page_label", content["article"])
             self.assertNotIn("MIN READ", json.dumps(content, ensure_ascii=False))
             self.assertNotIn("number", content["guide_questions"][0])
             self.assertNotIn("number", content["guide_questions"][1])
+
+    def test_opening_asset_cannot_be_replaced_by_an_article_image(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            Image.new("RGB", (600, 400), "#29616c").save(root / "assets" / "article.png")
+            article_path = root / "article.json"
+            article = json.loads(article_path.read_text(encoding="utf-8"))
+            article["assets"] = [{"id": "photo", "order": 1, "role": "article_image", "file": "assets/article.png"}]
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+            storyboard_path = root / "storyboard.json"
+            storyboard = MODULE.build_storyboard(production, questions, storyboard_path, 1.0)
+            storyboard["slides"][0]["asset"] = {"role": "article_asset", "file": "assets/article.png"}
+            storyboard_path.write_text(json.dumps(storyboard), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.StoryboardError, "opening slide must use the verified issue cover"):
+                MODULE.render_storyboard(production, storyboard_path, "16:9")
+
+    def test_three_article_assets_repeat_at_twenty_second_dwell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            with wave.open(str(root / "audio" / "en" / "final.wav"), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(10)
+                wav.writeframes(b"\0\0" * 10 * 128)
+            article_path = root / "article.json"
+            article = json.loads(article_path.read_text(encoding="utf-8"))
+            article["assets"] = []
+            for index, field in enumerate(("role", "kind", "role"), start=1):
+                image_path = root / "assets" / f"asset-{index}.png"
+                Image.new("RGB", (600 + index, 400), f"#{index}{index}{index}{index}{index}{index}").save(image_path)
+                article["assets"].append({
+                    "id": f"asset-{index}",
+                    "order": index,
+                    field: "article_chart" if index > 1 else "article_image",
+                    "file": f"assets/asset-{index}.png",
+                })
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+            storyboard = MODULE.build_storyboard(production, questions, root / "storyboard.json", 8.0)
+            content = storyboard["slides"][1:]
+            self.assertEqual(
+                [slide["asset"]["id"] for slide in content],
+                ["asset-1", "asset-2", "asset-3", "asset-1", "asset-2", "asset-3"],
+            )
+            self.assertTrue(all(18 <= slide["end_seconds"] - slide["start_seconds"] <= 22 for slide in content))
+            self.assertEqual(storyboard["media_rotation"]["actual_dwell_seconds"]["minimum"], 20.0)
+            self.assertFalse(storyboard["media_rotation"]["short_program_exception"])
+
+            storyboard["slides"][2]["asset"] = {
+                "role": "issue_cover", "id": "issue-cover", "file": "assets/issue-cover.png",
+            }
+            with self.assertRaisesRegex(MODULE.StoryboardError, "approved article images or charts"):
+                MODULE.validate_storyboard_assets(storyboard, article, root)
 
     def test_legacy_srt_is_consumed_without_repartitioning_text_or_time(self):
         with tempfile.TemporaryDirectory() as temporary:

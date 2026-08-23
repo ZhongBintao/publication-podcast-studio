@@ -302,6 +302,44 @@ class AzureSpeechMediaTests(unittest.TestCase):
             self.assertTrue((root / "captions.zh-CN.vtt").exists())
             self.assertFalse((root / "audio/en/final.wav").exists())
 
+    def test_chinese_script_cues_split_on_script_punctuation_when_word_events_omit_it(self):
+        source = "Claude 给出的答案很精彩。Shanahan 说，这很有新意。"
+        alignment = {"segments": [{
+            "spoken_text": source,
+            "words": [
+                {"text_offset": 0, "word_length": 6, "start_seconds": 0.0, "end_seconds": 0.4},
+                {"text_offset": 7, "word_length": 1, "start_seconds": 0.4, "end_seconds": 0.5},
+                {"text_offset": 8, "word_length": 1, "start_seconds": 0.5, "end_seconds": 0.6},
+                {"text_offset": 9, "word_length": 1, "start_seconds": 0.6, "end_seconds": 0.7},
+                {"text_offset": 10, "word_length": 2, "start_seconds": 0.7, "end_seconds": 0.9},
+                {"text_offset": 12, "word_length": 1, "start_seconds": 0.9, "end_seconds": 1.0},
+                {"text_offset": 13, "word_length": 2, "start_seconds": 1.0, "end_seconds": 1.2},
+                {"text_offset": 16, "word_length": 8, "start_seconds": 1.5, "end_seconds": 2.0},
+                {"text_offset": 25, "word_length": 1, "start_seconds": 2.0, "end_seconds": 2.2},
+                {"text_offset": 27, "word_length": 1, "start_seconds": 2.2, "end_seconds": 2.4},
+                {"text_offset": 28, "word_length": 1, "start_seconds": 2.4, "end_seconds": 2.6},
+                {"text_offset": 29, "word_length": 1, "start_seconds": 2.6, "end_seconds": 2.8},
+                {"text_offset": 30, "word_length": 2, "start_seconds": 2.8, "end_seconds": 3.0},
+            ],
+        }]}
+        cues = MEDIA.script_cues(alignment, "zh-CN")
+        self.assertEqual([cue["text"] for cue in cues], ["Claude 给出的答案很精彩。", "Shanahan 说，这很有新意。"])
+        self.assertTrue(all(len(cue["text"]) <= MEDIA.MAX_CHINESE_CHARS for cue in cues))
+
+    def test_local_chinese_caption_rebuild_reuses_alignment_without_synthesis(self):
+        temp, root, production_path = self.make_package("zh-CN")
+        with temp:
+            provider = FakeAzureProvider()
+            MEDIA.run_media(production_path, provider)
+            synthesis_calls = len(provider.synthesis_calls)
+            (root / "captions.zh-CN.srt").unlink()
+            (root / "captions.zh-CN.vtt").unlink()
+            result = MEDIA.rebuild_captions(production_path)
+            self.assertEqual(result["variant"], "zh-CN")
+            self.assertEqual(len(provider.synthesis_calls), synthesis_calls)
+            self.assertTrue((root / "captions.zh-CN.srt").exists())
+            self.assertTrue((root / "captions.zh-CN.vtt").exists())
+
     def test_chinese_opening_and_closing_share_tts_alignment_and_captions(self):
         temp, root, production_path = self.make_package("zh-CN")
         with temp:

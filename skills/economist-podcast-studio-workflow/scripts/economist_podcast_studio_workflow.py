@@ -9,10 +9,14 @@ align missing media in local-only mode and reports that boundary explicitly.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import math
 import re
+import struct
 import sys
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,7 +31,7 @@ import static_slide_storyboard as storyboard  # type: ignore  # noqa: E402
 
 
 WORKFLOW_NAME = "economist-podcast-studio-workflow"
-WORKFLOW_VERSION = "0.3.0"
+WORKFLOW_VERSION = "0.4.0"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_ASPECT_RATIOS = {"16:9", "9:16"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
@@ -41,6 +45,7 @@ MIN_GUIDE_QUESTION_WORDS = 8
 MAX_ENGLISH_CAPTION_CHARS = 84
 MAX_CHINESE_CAPTION_CHARS = 48
 CHINESE_LINE_START_PUNCTUATION = tuple("，。！？；：、）》】〉〕〗」』")
+MIN_EFFECTIVE_BACKGROUND_RMS_DBFS = -45.0
 
 
 class WorkflowError(ValueError):
@@ -122,6 +127,31 @@ def word_count(value: str) -> int:
     return len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", value))
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def wav_rms_dbfs(path: Path, start_frame: int, end_frame: int) -> float | None:
+    with wave.open(str(path), "rb") as source:
+        if source.getsampwidth() != 2 or source.getcomptype() != "NONE":
+            raise WorkflowError("Background-music QA requires 16-bit PCM WAV stems.")
+        start = max(0, min(source.getnframes(), int(start_frame)))
+        end = max(start, min(source.getnframes(), int(end_frame)))
+        source.setpos(start)
+        frames = source.readframes(end - start)
+    sample_count = len(frames) // 2
+    if sample_count <= 0:
+        return None
+    square_sum = sum(sample[0] * sample[0] for sample in struct.iter_unpack("<h", frames))
+    if square_sum <= 0:
+        return None
+    return round(20 * math.log10(math.sqrt(square_sum / sample_count) / 32768.0), 7)
+
+
 def artifact_map(production: dict[str, Any], variant: str) -> dict[str, str]:
     artifacts = production.get("artifacts", {})
     suffix = "zh_cn" if variant == "zh-CN" else variant.replace("-", "_")
@@ -166,7 +196,137 @@ def validate_article(root: Path, production: dict[str, Any], variant: str) -> tu
     return article, read_json(editorial_path), artifacts
 
 
-def validate_media(root: Path, production: dict[str, Any], variant: str, artifacts: dict[str, str], local_only: bool) -> dict[str, Path]:
+def background_music_quality(
+    root: Path, production: dict[str, Any], variant: str, final_audio: Path,
+) -> dict[str, Any]:
+    language = "zh-CN" if variant == "zh-CN" else "en"
+    suffix = "zh_cn" if language == "zh-CN" else "en"
+    artifacts = production.get("artifacts", {})
+    config = production.get("background_music", {}).get(language, {})
+    try:
+        script_policy = float(production.get("script_generation", {}).get("policy_version", "0") or 0)
+    except (TypeError, ValueError):
+        script_policy = 0.0
+    required = bool(config.get("required")) or script_policy >= 5.3
+    timeline_reference = artifacts.get(f"background_music_timeline_{suffix}") or config.get("timeline")
+    voice_reference = artifacts.get(f"voice_track_{suffix}")
+    background_reference = artifacts.get(f"background_music_{suffix}")
+    if not all(isinstance(value, str) for value in (timeline_reference, voice_reference, background_reference)):
+        if required:
+            raise WorkflowError("speech-media: required background-music stems or timeline are missing.")
+        return {
+            "status": "legacy_not_enforced",
+            "language": language,
+            "required": False,
+            "checks": {},
+            "sections": {},
+        }
+    timeline_path = local_path(root, timeline_reference, "background-music timeline")
+    voice_path = local_path(root, voice_reference, "voice track")
+    background_path = local_path(root, background_reference, "background-music track")
+    timeline = read_json(timeline_path)
+    audibility = timeline.get("audibility")
+    if isinstance(audibility, dict) and isinstance(audibility.get("sections"), dict):
+        sections = audibility["sections"]
+        section_pass = all(
+            item.get("status") in {"passed", "not_applicable"}
+            for item in sections.values()
+            if isinstance(item, dict)
+        )
+    else:
+        scale = timeline.get("peak_protection", {}).get("background_scale", 1.0)
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError):
+            scale = 1.0
+        sections = {}
+        for label in ("opening", "middle", "ending"):
+            placement = timeline.get("placements", {}).get(label, {})
+            start_frame = int(placement.get("start_frame", 0))
+            end_frame = int(placement.get("end_frame", 0))
+            rms = wav_rms_dbfs(background_path, start_frame, end_frame)
+            effective_rms = (
+                round(rms + 20 * math.log10(scale), 7)
+                if rms is not None and scale > 0 else None
+            )
+            required_section = end_frame > start_frame
+            sections[label] = {
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "effective_background_rms_dbfs": effective_rms,
+                "minimum_rms_dbfs": MIN_EFFECTIVE_BACKGROUND_RMS_DBFS,
+                "status": (
+                    "passed" if required_section and effective_rms is not None and effective_rms > MIN_EFFECTIVE_BACKGROUND_RMS_DBFS
+                    else "failed" if required_section else "not_applicable"
+                ),
+            }
+        section_pass = all(item["status"] in {"passed", "not_applicable"} for item in sections.values())
+    checks = {
+        "mixed_differs_from_voice_track": sha256_file(final_audio) != sha256_file(voice_path),
+        "required_sections_audible": section_pass,
+        "pcm_clipping_absent": timeline.get("peak_protection", {}).get("clipped_sample_count", 0) == 0,
+    }
+    result = {
+        "status": "passed" if all(checks.values()) else "failed",
+        "language": language,
+        "required": required,
+        "mix_policy": timeline.get("mix_policy", {}).get("version") or config.get("mix_policy") or "legacy_global_peak_protection",
+        "checks": checks,
+        "sections": sections,
+        "ducking": timeline.get("peak_protection", {}),
+        "timeline": str(timeline_path.relative_to(root)),
+    }
+    if result["status"] != "passed":
+        failed_checks = [name for name, passed in checks.items() if not passed]
+        raise WorkflowError("speech-media: background-music QA failed: " + ", ".join(failed_checks))
+    return result
+
+
+def chinese_framing_quality(script_path: Path, article: dict[str, Any]) -> dict[str, Any]:
+    script = read_json(script_path)
+    opening = [item for item in script if item.get("kind") == "opening"]
+    closing = [item for item in script if item.get("kind") == "closing"]
+    body = [item for item in script if item.get("kind") not in {"opening", "closing"}]
+    paragraph_ids = [f"p{int(item.get('order', index)):03d}" for index, item in enumerate(article.get("paragraphs", []), start=1)]
+    positions = {source_id: index for index, source_id in enumerate(paragraph_ids)}
+    pairs = []
+    for index, item in enumerate(body[:-1]):
+        answer = body[index + 1]
+        if (
+            item.get("kind") == "prompt"
+            and answer.get("kind") in {"verbatim", "sentence_split"}
+            and item.get("speaker_id") != answer.get("speaker_id")
+            and item.get("source_paragraph_ids") == answer.get("source_paragraph_ids")
+            and item.get("source_paragraph_ids")
+        ):
+            source_id = item["source_paragraph_ids"][0]
+            if source_id in positions and paragraph_ids:
+                pairs.append({
+                    "source_paragraph_id": source_id,
+                    "quarter": min(4, positions[source_id] * 4 // len(paragraph_ids) + 1),
+                })
+    checks = {
+        "opening_turns": len(opening) == 3,
+        "opening_speaker_order": [item.get("speaker_id") for item in opening] == ["primary", "secondary", "primary"],
+        "opening_core_question": len(opening) > 1 and str(opening[1].get("spoken_text", "")).rstrip().endswith(("？", "?")),
+        "closing_turns": len(closing) == 2,
+        "closing_speaker_order": [item.get("speaker_id") for item in closing] == ["primary", "secondary"],
+        "signoff_separate": len(closing) > 1 and not closing[1].get("source_paragraph_ids"),
+        "long_article_interactions": len(paragraph_ids) < 20 or (
+            len(pairs) >= 4 and {item["quarter"] for item in pairs} == {1, 2, 3, 4}
+        ),
+    }
+    return {
+        "status": "passed" if all(checks.values()) else "failed",
+        "policy_version": "5.3",
+        "checks": checks,
+        "interaction_pairs": pairs,
+    }
+
+
+def validate_media(
+    root: Path, production: dict[str, Any], variant: str, artifacts: dict[str, str], local_only: bool,
+) -> tuple[dict[str, Path], dict[str, Any]]:
     paths: dict[str, Path] = {}
     missing: list[str] = []
     for label in ("script", "audio", "captions", "subtitle_script", "caption_cues"):
@@ -198,7 +358,8 @@ def validate_media(root: Path, production: dict[str, Any], variant: str, artifac
                 raise WorkflowError(f"Caption cue {index} has {len(chinese)} Chinese characters; maximum is 48.")
             if chinese and any(line.startswith(CHINESE_LINE_START_PUNCTUATION) for line in chinese.splitlines()):
                 raise WorkflowError(f"Caption cue {index} starts a visual Chinese line with attached punctuation.")
-    return paths
+    quality = background_music_quality(root, production, variant, paths["audio"])
+    return paths, quality
 
 
 def freeze_vertical_request(
@@ -215,6 +376,13 @@ def freeze_vertical_request(
     output["aspect_ratios"] = frozen
     if len(plans) == 1:
         output["subtitle_mode"] = plans[0]["subtitle_mode"]
+    production.setdefault("video", {}).setdefault("image_rotation", {}).update({
+        "opening_duration_seconds": 8.0,
+        "target_dwell_seconds": storyboard.CONTENT_IMAGE_TARGET_SECONDS,
+        "minimum_dwell_seconds": storyboard.CONTENT_IMAGE_MIN_SECONDS,
+        "maximum_dwell_seconds": storyboard.CONTENT_IMAGE_MAX_SECONDS,
+        "order": "source_round_robin",
+    })
     request = {
         "products": [plan["id"] for plan in plans],
         "aspect_ratios": ratios,
@@ -286,6 +454,9 @@ def run_workflow(
     reused_artifacts: set[str] = set()
     storyboard_paths: dict[str, str] = {}
     product_states: dict[str, dict[str, Any]] = {}
+    music_quality: dict[str, dict[str, Any]] = {}
+    media_rotation: dict[str, dict[str, Any]] = {}
+    framing_quality: dict[str, dict[str, Any]] = {}
     try:
         for plan in plans:
             selected_variant = plan["variant"]
@@ -293,12 +464,28 @@ def run_workflow(
             production.setdefault("output", {})["subtitle_mode"] = plan["subtitle_mode"]
             write_json(production_path, production)
             article, editorial, artifacts = validate_article(root, production, selected_variant)
-            paths = validate_media(root, production, selected_variant, artifacts, local_only)
+            paths, product_music_quality = validate_media(root, production, selected_variant, artifacts, local_only)
+            music_quality[plan["id"]] = product_music_quality
+            if selected_variant == "zh-CN":
+                try:
+                    chinese_policy = float(production.get("script_generation", {}).get("policy_version", "0") or 0)
+                except (TypeError, ValueError):
+                    chinese_policy = 0.0
+                if chinese_policy >= 5.3:
+                    framing_quality[plan["id"]] = chinese_framing_quality(paths["script"], article)
+                    if framing_quality[plan["id"]]["status"] != "passed":
+                        raise WorkflowError("script: Chinese 5.3 framing quality gate failed.")
+                else:
+                    framing_quality[plan["id"]] = {
+                        "status": "legacy_not_enforced",
+                        "policy_version": production.get("script_generation", {}).get("policy_version"),
+                    }
             reused_artifacts.update(str(path.relative_to(root)) for path in paths.values())
             questions_path = local_path(root, artifacts["editorial_assets"], "editorial assets")
             storyboard_path = root / "storyboard.json" if len(plans) == 1 else root / "storyboards" / f"{plan['id']}.json"
-            storyboard.build_storyboard(production_path, questions_path, storyboard_path, opening_duration)
+            built_storyboard = storyboard.build_storyboard(production_path, questions_path, storyboard_path, opening_duration)
             storyboard_paths[plan["id"]] = str(storyboard_path.relative_to(root))
+            media_rotation[plan["id"]] = built_storyboard["media_rotation"]
             product_states[plan["id"]] = {"state": "complete", "variant": selected_variant, "subtitle_mode": plan["subtitle_mode"]}
             for ratio in ratios:
                 output_path, reused = storyboard.render_storyboard(production_path, storyboard_path, ratio, voice_profile, plan["subtitle_mode"])
@@ -327,7 +514,7 @@ def run_workflow(
     })
     write_json(production_path, production)
     report = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "workflow": WORKFLOW_NAME,
         "workflow_version": WORKFLOW_VERSION,
         "state": "complete",
@@ -343,6 +530,11 @@ def run_workflow(
         "aspect_ratios": ratios,
         "reused_artifacts": sorted(reused_artifacts),
         "storyboards": storyboard_paths,
+        "quality": {
+            "chinese_framing": framing_quality,
+            "background_music": music_quality,
+            "media_rotation": media_rotation,
+        },
         "outputs": rendered,
         "limitations": [],
     }
@@ -367,7 +559,7 @@ def write_blocked_report(
         return None
     report_path = root / "workflow-report.json"
     write_json(report_path, {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "workflow": WORKFLOW_NAME,
         "workflow_version": WORKFLOW_VERSION,
         "state": "blocked" if isinstance(error, WorkflowBlocked) else "failed",

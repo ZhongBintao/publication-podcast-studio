@@ -14,6 +14,20 @@ SPEC.loader.exec_module(MODULE)
 
 
 class VisualSystemPreviewTests(unittest.TestCase):
+    def test_image_border_wraps_the_contained_image_not_the_letterbox_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "square.png"
+            Image.new("RGB", (100, 100), "#A61919").save(source)
+            canvas = Image.new("RGB", (300, 120), "#000000")
+            MODULE.draw_image(canvas, {
+                "bbox": [0, 0, 300, 120],
+                "fit": "contain",
+                "style": {"stroke": "solid", "border_color": "#FFFFFF", "border_width_output_px": 3},
+            }, source, 1.0)
+            self.assertEqual(canvas.getpixel((89, 0)), (38, 38, 38))
+            self.assertEqual(canvas.getpixel((90, 0)), (255, 255, 255))
+            self.assertEqual(canvas.getpixel((94, 4)), (166, 25, 25))
+
     def test_extracted_definition_renders_all_four_states(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -160,6 +174,26 @@ class VisualSystemPreviewTests(unittest.TestCase):
         self.assertEqual(len(examples), 19)
         self.assertTrue(all(line.startswith(tuple("，。！？；：、）》】")) for line in examples))
         self.assertEqual(MODULE.cjk_wrap_tokens("油气，贸易。"), ["油", "气，", "贸", "易。"])
+
+    def test_mixed_cjk_caption_with_latin_name_wraps_inside_portrait_safe_box(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cover = root / "cover.png"
+            Image.new("RGB", (600, 800), "#A61919").save(cover)
+            definition = MODULE.read_definition(MODULE.DEFAULT_DEFINITION)
+            diagnostics = []
+            MODULE.render_template(
+                definition, "portrait_opening", cover,
+                {**MODULE.SAMPLE_CONTENT, "caption": {"current": {
+                    "en": "",
+                    "zh": "Anthropic 的研究人员用他们开发的一种数学工具，成功看进了这些层。",
+                }}},
+                1920, 1080, diagnostics,
+            )
+            caption = next(item for item in diagnostics if item["layer"] == "caption_zh")
+            _, _, width, _ = caption["safe_bbox"]
+            self.assertTrue(all(line[2] <= width for line in caption["line_bboxes"]))
+            self.assertFalse(any(line.startswith(tuple("，。！？；：、）》】〉〕〗」』")) for line in caption["lines"]))
 
     def test_caption_fails_instead_of_truncating_when_protected_space_is_exhausted(self):
         with tempfile.TemporaryDirectory() as temporary:

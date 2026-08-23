@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,32 @@ def publication_suffix(publication_variant: str) -> str:
         raise EditorialAssetsError(f"Unsupported editorial publication variant: {publication_variant}") from error
 
 
+def title_signature(value: str) -> str:
+    return re.sub(r"[^\u3400-\u9fff0-9]", "", value)
+
+
+def publication_title_body(publication: dict[str, Any], title_suffix: str) -> str:
+    if "title_body_zh" in publication:
+        return all_chinese_text(publication.get("title_body_zh"), "publication.title_body_zh")
+    legacy_title = all_chinese_text(publication.get("title_zh"), "publication.title_zh")
+    if not legacy_title.startswith(TITLE_PREFIX) or not legacy_title.endswith(title_suffix):
+        raise EditorialAssetsError("Publication title must use the fixed Economist podcast wrapper.")
+    body = legacy_title[len(TITLE_PREFIX):-len(title_suffix)].strip()
+    return all_chinese_text(body, "publication title body")
+
+
+def validate_publication_title_body(body: str, display_headline: str) -> str:
+    signature = title_signature(body)
+    display_signature = title_signature(display_headline)
+    if display_signature:
+        similarity = SequenceMatcher(None, signature, display_signature).ratio()
+        if signature == display_signature or similarity >= 0.88:
+            raise EditorialAssetsError("Publication title body must distill the article, not repeat or directly translate its display headline.")
+    if not 12 <= len(signature) <= 28:
+        raise EditorialAssetsError("Publication title body must contain 12 to 28 Chinese characters or digits.")
+    return body
+
+
 def editorial_request(article_path: Path, publication_variant: str = "en-zh") -> dict[str, Any]:
     article, paragraphs = load_article(article_path)
     return {
@@ -119,7 +146,12 @@ def editorial_request(article_path: Path, publication_variant: str = "en-zh") ->
             "Each question must be 8 to 22 English words, use an article-specific mechanism, actor, contrast or consequence, "
             "and not be a generic yes-or-no slogan. Question one must expose the article's central change or mechanism; "
             "question two must explore its implication, trade-off or unresolved consequence. Do not add facts, predictions, "
-            "explanations, or conclusions. The publication title must use the fixed wrapper. Cover text must contain exactly "
+            "explanations, or conclusions. For the publication title, silently draft three Chinese title-body candidates, compare them for "
+            "factual fidelity, article specificity, information gain and natural Chinese, then return only the strongest title_body_zh. "
+            "It must be 12 to 28 Chinese characters or digits, distil the article's central change or mechanism plus its tension or stakes, "
+            "and must not merely translate or lightly expand the English headline or display.headline_zh. Do not include the Economist prefix "
+            "or podcast/subtitle suffix; the finaliser adds those fixed format markers. Avoid generic phrases such as 深度解读、背后真相 or "
+            "发生了什么. Cite at least two supporting paragraphs when the article has two or more paragraphs. Cover text must contain exactly "
             "three distinct Chinese lines, ordered top, middle, bottom: conflict or surprise, article mechanism, then stakes. "
             "Before returning, silently check that every question and cover line is specific to the cited paragraphs."
         ),
@@ -132,7 +164,7 @@ def editorial_request(article_path: Path, publication_variant: str = "en-zh") ->
                 {"question": "", "translation_zh": "", "source_paragraph_ids": []},
                 {"question": "", "translation_zh": "", "source_paragraph_ids": []},
             ],
-            "publication": {"title_zh": f"{TITLE_PREFIX}…{publication_suffix(publication_variant)}", "description_zh": "", "source_paragraph_ids": []},
+            "publication": {"title_body_zh": "", "description_zh": "", "source_paragraph_ids": []},
             "cover_text": [
                 {"position": "top", "text": "", "source_paragraph_ids": []},
                 {"position": "middle", "text": "", "source_paragraph_ids": []},
@@ -187,14 +219,18 @@ def validate_draft(
     publication = draft.get("publication")
     if not isinstance(publication, dict):
         raise EditorialAssetsError("Editorial draft needs publication.")
-    title = all_chinese_text(publication.get("title_zh"), "publication.title_zh")
     title_suffix = publication_suffix(publication_variant)
-    if not title.startswith(TITLE_PREFIX) or not title.endswith(title_suffix) or not title[len(TITLE_PREFIX):-len(title_suffix)].strip():
-        raise EditorialAssetsError("Publication title must use the fixed Economist podcast wrapper.")
+    title_body = validate_publication_title_body(
+        publication_title_body(publication, title_suffix), result_display["headline_zh"]
+    )
+    publication_source_ids = source_ids(publication.get("source_paragraph_ids"), known, "publication")
+    if len(known) >= 2 and len(publication_source_ids) < 2:
+        raise EditorialAssetsError("Publication title and description must cite at least two supporting source paragraphs.")
     result_publication = {
-        "title_zh": title,
+        "title_body_zh": title_body,
+        "title_zh": f"{TITLE_PREFIX}{title_body}{title_suffix}",
         "description_zh": all_chinese_text(publication.get("description_zh"), "publication.description_zh"),
-        "source_paragraph_ids": source_ids(publication.get("source_paragraph_ids"), known, "publication"),
+        "source_paragraph_ids": publication_source_ids,
     }
     lines = draft.get("cover_text")
     if not isinstance(lines, list) or len(lines) != 3:

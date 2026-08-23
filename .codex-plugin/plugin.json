@@ -1,7 +1,7 @@
 {
   "name": "economist-podcast-studio",
-  "version": "0.2.0+codex.20260822024324",
-  "description": "Vertical-first, source-linked Economist article extraction, conversational podcast scripts, reusable local media, and static-slide video rendering.",
+  "version": "0.2.1+codex.20260823",
+  "description": "Vertical-first, source-linked Economist podcast production with issue-cover openings, rotating article media, editorial Chinese titles, and static-slide video rendering.",
   "author": {
     "name": "Economist Podcast Studio"
   },
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Economist Podcast Studio",
     "shortDescription": "Produce source-linked Economist podcast videos",
-    "longDescription": "A vertical-first local production plugin for extracting one selected Economist article, freezing source-bounded conversational scripts and captions, reusing completed media, and rendering the approved 9:16 static-slide podcast video without external APIs when local artifacts are available.",
+    "longDescription": "A vertical-first local production plugin for extracting one selected Economist article, freezing source-bounded conversational scripts and captions, creating content-led Chinese publishing titles, and rendering 9:16 or 16:9 static-slide videos with a verified issue-cover opening and rotating article media.",
     "developerName": "Economist Podcast Studio",
     "category": "Media",
     "capabilities": [

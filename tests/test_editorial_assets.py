@@ -89,6 +89,33 @@ class EditorialAssetsTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.EditorialAssetsError, "top, middle, bottom"):
                 MODULE.validate_draft(article, paragraphs, draft)
 
+    def test_editorial_request_asks_only_for_a_distilled_title_body(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            article_path, _, _ = self.make_package(Path(temporary))
+            request = MODULE.editorial_request(article_path)
+            self.assertIn("title_body_zh", request["draft_schema"]["publication"])
+            self.assertNotIn("title_zh", request["draft_schema"]["publication"])
+            self.assertIn("must not merely translate", request["instructions"])
+
+    def test_validator_assembles_wrapper_and_rejects_direct_headline_translation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            article_path, draft_path, _ = self.make_package(Path(temporary))
+            article, paragraphs = MODULE.load_article(article_path)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["publication"] = {
+                "title_body_zh": "长期资本如何改写未来科技竞赛",
+                "description_zh": draft["publication"]["description_zh"],
+                "source_paragraph_ids": ["p001", "p002"],
+            }
+            result = MODULE.validate_draft(article, paragraphs, draft)
+            self.assertEqual(result["publication"]["title_body_zh"], "长期资本如何改写未来科技竞赛")
+            self.assertEqual(result["publication"]["title_zh"], "《经济学人》：长期资本如何改写未来科技竞赛 | 外刊播客 | 中英字幕")
+
+            draft["display"]["headline_zh"] = "北京，不是普林斯顿"
+            draft["publication"]["title_body_zh"] = "北京，不是普林斯顿"
+            with self.assertRaisesRegex(MODULE.EditorialAssetsError, "not repeat or directly translate"):
+                MODULE.validate_draft(article, paragraphs, draft)
+
     def test_zh_cn_variant_uses_chinese_only_publication_suffix(self):
         with tempfile.TemporaryDirectory() as temporary:
             article_path, draft_path, production = self.make_package(Path(temporary))

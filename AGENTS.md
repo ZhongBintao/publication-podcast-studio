@@ -46,20 +46,23 @@ Output:
 
 ## Current Focus
 
-The article, selected-script, Azure audio, alignment, caption, two-state
-storyboard and static-slide MP4 renderer stages are implemented. The
+The article, selected-script, Azure audio, alignment, caption, issue-cover plus
+article-media storyboard and static-slide MP4 renderer stages are implemented. The
 `economist-podcast-studio-workflow` entrypoint now coordinates those stages
 with a vertical-first, local-only reuse path and writes a package-level
 `workflow-report.json`.
 
-### Current Static Template Contract (2026-08-22)
+### Current Static Template Contract (2026-08-23)
 
 The 9:16 and 16:9 guide-question templates use fixed in-template red `01` and
 `02` number layers before the English question text. Question text is
 top-aligned with a fixed horizontal gap; number placement does not depend on
 runtime text measurement or caption content. Portrait opening metadata remains
 enlarged, with no page/CUE utility labels or subtitle frame. Images use contain
-placement and the bottom 10% remains reserved for platform details.
+placement with a 3 px white border around the actual contained-image edge, and
+the bottom 10% remains reserved for platform details. The opening always uses
+the verified issue cover; content slides rotate verified article photos and
+charts in source order.
 
 The landscape-number update was validated with the offline unit and structure
 suite. A complete MP4 render was intentionally not rerun for this
@@ -133,7 +136,8 @@ entire magazine issue to the model or use extracted PDF text as final copy.
   voice-only WAV, exports timeline-aligned voice and background stems, and
   writes their -18 dB mix to the canonical `audio/<language>/final.wav`; the
   static-slide renderer therefore carries the music into every final MP4.
-- `skills/economist-static-slide-video/` validates a two-state
+- `skills/economist-static-slide-video/` validates an issue-cover opening plus
+  rotating article-media
   `storyboard.json` and renders non-animated 16:9 or 9:16 MP4 outputs from the
   selected final WAV, canonical SRT, verified article package, issue cover and
   writing-stage guide-question payload. It never calls TTS, translation, OCR,
@@ -141,7 +145,7 @@ entire magazine issue to the model or use extracted PDF text as final copy.
 
 The current implementation has offline coverage for all completed skills plus
 successful small real Azure checks for the `en` and `en-zh` paths. The video
-renderer has an offline WAV/SRT fixture that verifies the two-state storyboard,
+renderer has an offline WAV/SRT fixture that verifies the opening/content storyboard,
 caption timing, asset failure behaviour, output addressing and rerun reuse.
 
 ## Orchestrated Production Request
@@ -258,14 +262,15 @@ It generates only the script required by the selected variant:
   condition and judgment; do not add explanation, context, examples, analysis
   or conclusions. Translate meaning rather than English word order, using
   short, clear spoken sentences and natural subjects and connectors.
-- Chinese scripts may additionally contain one controlled `opening` block and
-  one `closing` block around the body. These may create programme framing,
-  suspense, transitions, summaries and a natural sign-off. Empty source links
-  are allowed only for generic framing; any article fact, number, judgment or
-  concrete detail in a wrapper must cite one or more verified paragraphs.
-  Opening uses `primary`, closing uses `secondary`, and each wrapper is capped
-  at 120 readable Chinese characters. The final flat script remains one TTS,
-  WordBoundary and caption timeline.
+- New Chinese policy-5.3 scripts use exactly three `opening` turns in
+  primary/secondary/primary order and two `closing` turns in
+  primary/secondary order. The first two opening turns cite only the first two
+  source paragraphs; the second is a natural question. The first closing turn
+  cites only the final three source paragraphs and the second is a generic
+  sign-off with empty links. Each wrapper turn is capped at 48 readable
+  characters; opening and closing totals are 144 and 72. A compact wrapper-only
+  polish pass may run once without resending the full article. The final flat
+  script remains one TTS, WordBoundary and caption timeline.
 - Chinese final `spoken_text` is read-as-written TTS copy. Prefer common
   Chinese names; a bare English proper name is permitted when natural, but
   never use Chinese-plus-English aliases, parentheses, bracketed notes or
@@ -274,9 +279,10 @@ It generates only the script required by the selected variant:
   `spoken_text` and `source_paragraph_ids`. Both speakers may deliver
   source-linked body text. English scripts may contain source-linked
   `reaction` and `prompt` segments, and a source paragraph may use both
-  speakers. Chinese body scripts retain paragraph-level speaker assignment and
-  do not use interaction segments; wrapper segments use only `opening` and
-  `closing`. For short English articles, both hosts are
+  speakers. Chinese body scripts retain paragraph-level source links and may
+  use source-linked prompts, reactions and factual answers. Articles with 20
+  or more paragraphs require one prompt/other-host-answer pair in each source
+  quarter. Wrapper segments use only `opening` and `closing`. For short English articles, both hosts are
   used when there are at least two substantive units; longer scripts target a
   balanced word share and both hosts receive interaction opportunities.
   Do not duplicate the full English article in scripts, briefs or prompts.
@@ -423,15 +429,19 @@ relative artifact paths, hashes, frozen user choices, provider/model/voice
 identifiers, region and SDK/alignment method metadata, resumable segment progress
 and non-sensitive failure reasons. For v1, record the provider as
   `azure-speech`, the alignment method as `azure_word_boundary`, and the script
-  generation policy version as `5.2` for the source-bounded, framed, balanced
-  two-host segmented narration contract. English `production.json` also
+  generation policy version as `5.2` for English or `5.3` for the structured
+  Chinese two-host contract. English `production.json` also
   freezes `speaker_schedule.mode=seeded_constrained_random` and its seed;
   omitted seeds derive from `SHA256(source_sha256 + ":" + "5.2")`. Existing
   `5.0` and `5.1` packages remain compatible and are not rewritten.
 It must never contain a key, authorization header, signed URL or full secret
 request log. State is only `queued`, `running`, `complete` or `failed`.
 
-The Azure media skill applies background music on every successful media run.
+The Azure media skill applies the same background music rules to every
+successful `en`, `en-zh` and `zh-CN` media run. It uses 20 ms local background
+ducking with a 300 ms recovery while preserving voice samples. A run fails if
+the canonical mix equals the voice track, a played opening/middle/ending music
+section is at or below -45 dBFS, or PCM clipping is detected.
 It records the three input hashes, frame-level placements, gain and output
 hashes in `background-music.<language>.json`, and adds the voice-only,
 time-aligned voice, background, mixed-audio and timeline paths to
@@ -463,11 +473,17 @@ avatar video, dynamic video generation, sound effects or complex animation.
   by the Azure speech skill, so it carries the default background music without
   an extra renderer flag.
 
-The v1 storyboard has two contiguous states: an opening metadata slide followed
-by a concurrent two-question guide slide. The writing stage supplies the two
-questions, their Chinese translations, optional display translations and any
-source-paragraph links. The current image slot remains the verified issue cover
-until a separate approved image-selection policy expands the storyboard.
+The v1.1 storyboard starts with an opening metadata slide that must use the
+verified issue cover, followed by one or more concurrent two-question content
+slides. The content slides rotate through verified article photos and charts in
+source order, repeating at a target 20-second dwell time and falling back to the
+issue cover only when no article media exists. Normal dwell is 18--22 seconds;
+a short programme shows every asset once and records the exception. The
+sequence is strict source-order round-robin, without crop, animation or
+transition. The writing stage supplies the
+two questions, their Chinese translations, optional display translations and
+any source-paragraph links. All images use contain placement and a 3 px white
+border around the actual image edge.
 
 The skill accepts `en`, `en-zh` or `zh-CN` from `production.json`, consumes only
 that branch's completed audio/SRT artifacts, preserves their timeline, and

@@ -64,6 +64,9 @@ Write `source.md` only from verified model paragraphs. Preserve `source.raw.txt`
 The assembler also renders PDF page 1 once as the issue-cover asset and writes
 it to `assets/issue-cover.png`. It is recorded separately as
 `article.json.issue_cover`, not mixed into the article-image list. The
-static-slide video opener consumes this fixed issue-level asset.
+static-slide video opener consumes this fixed issue-level asset. New verified
+article photo and chart records always write canonical `role` values
+`article_image` or `article_chart`; downstream storyboards still accept the
+legacy `kind` discriminator when reading older packages.
 
 Treat `needs_review` as a successful safe stop, not an invitation to guess. Do not include terminal squares, continuation arrows, page headers, or excluded regions in formal Markdown.

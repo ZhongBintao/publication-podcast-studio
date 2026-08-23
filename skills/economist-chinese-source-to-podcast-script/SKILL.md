@@ -20,7 +20,7 @@ reported story. Follow the successful English writing profile:
 - reorder clauses and split dense English sentences when Chinese requires it;
 - use light spoken connectors sparingly, without adding claims;
 - allow source-linked prompts, answers and short reactions;
-- generate a concise, engaging `opening` and a natural `closing` around the
+- use the policy-5.3 three-turn opening and two-turn closing around the
   source-linked body;
 - keep every factual, prompt and reaction segment traceable to one verified
   source paragraph;
@@ -61,12 +61,38 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
 
 The writing request returns an object with `opening`, `body` and `closing`
 arrays. The finalizer flattens them into one TTS-ready script in that order.
-For backwards compatibility, a body-only array is still accepted. Opening and
-closing segments use the `opening` and `closing` kinds, default to the primary
-and secondary hosts respectively, and may have empty source links only when
-they contain generic programme framing. Any article fact, number, judgment or
-concrete detail in a wrapper must cite one or more source paragraphs. Each
-wrapper is limited to 120 readable Chinese characters.
+For backwards compatibility, a body-only array is still accepted. New policy
+5.3 drafts use exactly three `opening` turns in `primary`, `secondary`,
+`primary` order and two `closing` turns in `primary`, `secondary` order. The
+first opening turn is a concrete hook linked only to the first two source
+paragraphs and must not start with `欢迎收听`, `本期节目` or `今天我们来聊`.
+The second turn is a source-linked natural question; the third is a short
+bridge. The first closing turn cites only the final three source paragraphs and
+separates what is known from what remains unsettled; the second is a generic
+sign-off with empty source links. Every wrapper turn is at most 48 readable
+characters, with 144 characters for the opening and 72 for the closing.
+
+For articles with 20 or more source paragraphs, include at least four
+`prompt` → other-host factual-answer pairs, with one pair in each quarter of
+the source paragraph sequence. Factual character share remains within 40–60%
+and no host may speak more than three consecutive segments.
+
+Before freezing a new draft, run one compact wrapper-only polish pass. It sends
+only the current wrappers, their cited source paragraphs and the first and last
+body turns; it never resends the full article:
+
+```bash
+"$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py \
+  framing-polish-request ARTICLE.json chinese-draft.json > framing-polish-request.json
+
+"$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py \
+  apply-framing-polish ARTICLE.json chinese-draft.json framing-polish-draft.json script.zh-CN.json
+```
+
+This one pass checks the hook, core question, body bridge, known-versus-
+unsettled conclusion, opening-to-closing callback and separation of factual
+summary from the sign-off. A failed polished wrapper is rewritten once; a
+second failure blocks the Chinese writing stage.
 
 If validation fails, `retry-request --attempt 1` identifies only affected
 source paragraphs or wrapper sections. Apply the returned patch with
@@ -94,6 +120,16 @@ opening, source-linked body, closing; Chinese audio consumes this final text
 directly and the existing Azure timeline includes all three parts. It must not
 contain SSML or secret/provider data.
 
+The validator rejects a wrong wrapper turn count or speaker order, a missing
+opening question or source link, programme-boilerplate hooks, a combined
+factual-summary/sign-off turn, a hook that repeats the first factual body turn,
+and missing four-quarter interactions for a long article. Its validation result
+includes a `framing_quality` record for the workflow report.
+
 `editorial-assets.json` remains the shared article-level publishing artifact.
 For `zh-CN`, its English question fields are compatibility metadata only; the
 Chinese video template renders `translation_zh` and the Chinese display fields.
+The editorial draft returns only `publication.title_body_zh`; it must be a
+12--28-character content-based distillation rather than a direct translation of
+the English headline. The shared finaliser adds the fixed Economist/podcast
+format markers and rejects repetition of the Chinese display headline.

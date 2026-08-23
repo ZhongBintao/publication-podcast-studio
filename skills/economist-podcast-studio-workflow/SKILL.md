@@ -36,9 +36,14 @@ The default output is the approved 9:16 vertical template. A run may also
 request 16:9 for comparison, but the vertical output is the canonical current
 layout. The portrait renderer uses a contained image slot, reduced metadata,
 source-linked bilingual captions, and a reserved bottom 10% platform-detail
-safe area. Verified article imagery is preferred over the issue cover, and the
-opening has no read-time field. There are no top utility labels or decorative
-divider lines.
+safe area. The opening always uses the verified issue cover from PDF page one.
+After the opening, the content layout rotates through verified article photos
+and charts in source order, falling back to the issue cover only when no article
+media exists. The two-question content page targets 20 seconds per image and
+must remain within 18–22 seconds after even distribution. A short programme
+shows every asset exactly once and records its exception. There are no crops,
+animations or transitions. The opening has no read-time field. There are no top utility
+labels or decorative divider lines.
 
 ## Local-first execution
 
@@ -52,7 +57,7 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
 
 The local-only path validates and reuses verified article data, frozen scripts,
 reviewed captions, existing WAV audio and editorial assets; it then rebuilds
-the two-state storyboard if needed and renders MP4 locally with ffmpeg. It
+the issue-cover opening plus article-media storyboard if needed and renders MP4 locally with ffmpeg. It
 never calls Azure Speech, a translation provider, an image service or a
 language model.
 
@@ -70,6 +75,12 @@ media skill has no local TTS/alignment substitute, so synthesising or aligning
 new audio remains the only externally dependent step. Existing completed media
 can still be reused without any external call.
 
+All language products require the same packaged opening/middle/ending music
+rules. Before video rendering, the workflow verifies that the canonical mixed
+audio differs from the voice track, every played music section is above
+`-45 dBFS`, and no PCM clipping was recorded. `zh-CN` is not exempt. The video
+renderer does not remix; it muxes this already-approved canonical track.
+
 ## Frozen budgets and gates
 
 - Exactly two guide questions are required; each English question must contain
@@ -80,7 +91,14 @@ can still be reused without any external call.
   not fit at the portrait minimum font size is rejected; it is never truncated
   or silently repartitioned.
 - Every image is placed with `contain`, preserving the source aspect ratio.
+- Every visible source image has a 3 px white border around the actual contained
+  image bounds, not around any letterbox area.
+- Existing article media must appear in strict source-order round-robin; any
+  content-page issue-cover fallback is a failure when verified article media
+  exists.
 
 The workflow writes `workflow-report.json` in the article package. It records
 the frozen request, local/external execution mode, reused artifacts, rendered
-outputs and any blocking reason without storing credentials.
+outputs and any blocking reason without storing credentials. Schema 1.1 also
+records Chinese framing quality, background-music audibility and ducking
+metrics, normalized media rotation, sequence and actual dwell range.

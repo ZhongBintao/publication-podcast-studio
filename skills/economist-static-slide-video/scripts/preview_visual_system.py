@@ -177,8 +177,12 @@ def wrap(draw: ImageDraw.ImageDraw, value: str, face: ImageFont.FreeTypeFont, wi
         return []
     lines: list[str] = []
     for paragraph in value.splitlines() or [value]:
-        tokens = paragraph.split() if " " in paragraph else cjk_wrap_tokens(paragraph)
-        separator = " " if " " in paragraph else ""
+        # Chinese captions commonly include spaces around Latin names or
+        # acronyms. Keep CJK-aware tokenisation in that case, otherwise the
+        # remaining Chinese run becomes one unbreakable whitespace token.
+        cjk = has_cjk(paragraph)
+        tokens = cjk_wrap_tokens(paragraph) if cjk else paragraph.split()
+        separator = "" if cjk else " "
         current = ""
         for token in tokens:
             if not current and measure(draw, token, face)[0] > width:
@@ -209,8 +213,9 @@ def balanced_wrap(draw: ImageDraw.ImageDraw, value: str, face: ImageFont.FreeTyp
     if max_lines != 2 or len(greedy) <= 1 or "\n" in value:
         return greedy
     paragraph = " ".join(value.split())
-    tokens = paragraph.split(" ") if " " in paragraph else cjk_wrap_tokens(paragraph)
-    separator = " " if " " in paragraph else ""
+    cjk = has_cjk(paragraph)
+    tokens = cjk_wrap_tokens(paragraph) if cjk else paragraph.split(" ")
+    separator = "" if cjk else " "
     candidates: list[tuple[int, list[str]]] = []
     for index in range(1, len(tokens)):
         left = separator.join(tokens[:index])
@@ -649,6 +654,7 @@ def draw_text(canvas: Image.Image, layer: dict[str, Any], content: dict[str, Any
 def draw_image(canvas: Image.Image, layer: dict[str, Any], cover_path: Path, scale: float) -> None:
     x, y, width, height = scaled_box(layer["bbox"], scale)
     frame = Image.new("RGB", (width, height), "#262626")
+    image_bbox = (x, y, x + width - 1, y + height - 1)
     with Image.open(cover_path) as source:
         image = source.convert("RGB")
         fit = layer.get("fit", "contain")
@@ -659,13 +665,19 @@ def draw_image(canvas: Image.Image, layer: dict[str, Any], cover_path: Path, sca
             offset_y = max(0, (resized.height - height) // 2)
             frame.paste(resized.crop((offset_x, offset_y, offset_x + width, offset_y + height)))
         else:
-            frame.paste(resized, ((width - resized.width) // 2, (height - resized.height) // 2))
+            offset_x = (width - resized.width) // 2
+            offset_y = (height - resized.height) // 2
+            frame.paste(resized, (offset_x, offset_y))
+            image_bbox = (x + offset_x, y + offset_y, x + offset_x + resized.width - 1, y + offset_y + resized.height - 1)
     canvas.paste(frame, (x, y))
     style = layer.get("style", {})
     if style.get("stroke", "none") != "none":
         border_color = style.get("border_color", "#FFFFFF")
-        border_width = max(1, round(float(style.get("border_width_px", 2)) * scale))
-        ImageDraw.Draw(canvas).rectangle((x, y, x + width - 1, y + height - 1), outline=border_color, width=border_width)
+        if "border_width_output_px" in style:
+            border_width = max(1, round(float(style["border_width_output_px"])))
+        else:
+            border_width = max(1, round(float(style.get("border_width_px", 2)) * scale))
+        ImageDraw.Draw(canvas).rectangle(image_bbox, outline=border_color, width=border_width)
 
 
 def render_template(

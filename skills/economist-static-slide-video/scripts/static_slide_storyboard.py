@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,10 @@ TEMPLATE_PATH = ROOT / "templates" / "podcast-video-visual-system.v1.json"
 STORYBOARD_FORMAT = "economist-static-slide-storyboard"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
+ARTICLE_ASSET_ROLES = {"article_image", "article_chart"}
+CONTENT_IMAGE_TARGET_SECONDS = 20.0
+CONTENT_IMAGE_MIN_SECONDS = 18.0
+CONTENT_IMAGE_MAX_SECONDS = 22.0
 
 
 class StoryboardError(ValueError):
@@ -140,16 +145,126 @@ def issue_cover(article: dict[str, Any], root: Path) -> str:
     return relative_path(cover, root)
 
 
-def approved_slide_asset(article: dict[str, Any], root: Path) -> tuple[str, str]:
-    """Prefer the verified article image while retaining fixture compatibility."""
-    for asset in article.get("assets", []):
-        if not isinstance(asset, dict) or asset.get("role") != "article_image":
-            continue
+def approved_article_assets(article: dict[str, Any], root: Path) -> list[dict[str, Any]]:
+    """Return verified article media in stable source order, without duplicates."""
+    approved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    candidates = [
+        (source_index, asset)
+        for source_index, asset in enumerate(article.get("assets", []))
+        if isinstance(asset, dict)
+    ]
+    candidates.sort(key=lambda item: (
+        item[1].get("order") if isinstance(item[1].get("order"), int) else item[0],
+        item[0],
+    ))
+    for index, (source_index, asset) in enumerate(candidates, start=1):
+        # Verified article packages historically store the asset discriminator
+        # as `kind`; newer packages use `role`. Both identify the same
+        # source-approved image/chart contract.
+        article_role = asset.get("role") or asset.get("kind")
         asset_ref = asset.get("file")
-        if isinstance(asset_ref, str):
-            image = package_path(root, asset_ref, "article image")
-            return "article_asset", relative_path(image, root)
-    return "issue_cover", issue_cover(article, root)
+        if article_role not in ARTICLE_ASSET_ROLES or not isinstance(asset_ref, str):
+            continue
+        image = package_path(root, asset_ref, f"approved {article_role}")
+        asset_file = relative_path(image, root)
+        if asset_file in seen:
+            continue
+        seen.add(asset_file)
+        source_ids = asset.get("source_paragraph_ids", [])
+        if not isinstance(source_ids, list) or not all(isinstance(value, str) for value in source_ids):
+            source_ids = []
+        approved.append({
+            "role": "article_asset",
+            "id": str(asset.get("id") or f"article-asset-{index:03d}"),
+            "article_role": article_role,
+            "file": asset_file,
+            "source_order": source_index + 1,
+            "source_paragraph_ids": list(dict.fromkeys(source_ids)),
+        })
+    return approved
+
+
+def content_slot_plan(content_duration: float, asset_count: int) -> dict[str, Any]:
+    selected_count = max(1, asset_count)
+    if content_duration < CONTENT_IMAGE_MIN_SECONDS * selected_count:
+        return {
+            "slot_count": selected_count,
+            "short_program_exception": True,
+            "reason": "insufficient_duration_for_each_asset_at_minimum_dwell",
+        }
+    minimum_slots = max(selected_count, math.ceil(content_duration / CONTENT_IMAGE_MAX_SECONDS))
+    maximum_slots = math.floor(content_duration / CONTENT_IMAGE_MIN_SECONDS)
+    if minimum_slots > maximum_slots:
+        raise StoryboardError(
+            "Content duration cannot be partitioned into complete 18–22 second image slots."
+        )
+    candidates = range(minimum_slots, maximum_slots + 1)
+    slot_count = min(candidates, key=lambda count: (abs(content_duration / count - CONTENT_IMAGE_TARGET_SECONDS), count))
+    return {"slot_count": slot_count, "short_program_exception": False, "reason": None}
+
+
+def content_slides(
+    opening_end: float,
+    duration: float,
+    assets: list[dict[str, Any]],
+    issue_cover_file: str,
+    fallback_source_ids: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    content_duration = duration - opening_end
+    if content_duration <= 0:
+        return [], {
+            "normalized_assets": assets,
+            "sequence": [],
+            "actual_dwell_seconds": {"minimum": None, "maximum": None, "values": []},
+            "short_program_exception": True,
+            "exception_reason": "no_content_duration",
+        }
+    selected = assets or [{
+        "role": "issue_cover",
+        "id": "issue-cover-fallback",
+        "file": issue_cover_file,
+        "source_paragraph_ids": [],
+    }]
+    plan = content_slot_plan(content_duration, len(selected))
+    slot_count = plan["slot_count"]
+    slot_duration = content_duration / slot_count
+    slides: list[dict[str, Any]] = []
+    sequence: list[dict[str, Any]] = []
+    dwells: list[float] = []
+    for index in range(slot_count):
+        start = opening_end + index * slot_duration
+        end = duration if index == slot_count - 1 else opening_end + (index + 1) * slot_duration
+        selected_asset = selected[index % len(selected)]
+        asset = {key: value for key, value in selected_asset.items() if key != "source_paragraph_ids"}
+        source_ids = selected_asset.get("source_paragraph_ids") or fallback_source_ids
+        slides.append({
+            "id": f"content-{index + 1:03d}",
+            "template_role": "guide_questions",
+            "start_seconds": round(start, 3),
+            "end_seconds": duration if index == slot_count - 1 else round(end, 3),
+            "asset": asset,
+            "source_paragraph_ids": list(source_ids),
+        })
+        dwell = round(end - start, 3)
+        dwells.append(dwell)
+        sequence.append({
+            "slide_id": f"content-{index + 1:03d}",
+            "asset_id": selected_asset["id"],
+            "file": selected_asset["file"],
+            "dwell_seconds": dwell,
+        })
+    return slides, {
+        "normalized_assets": assets,
+        "sequence": sequence,
+        "actual_dwell_seconds": {
+            "minimum": min(dwells),
+            "maximum": max(dwells),
+            "values": dwells,
+        },
+        "short_program_exception": plan["short_program_exception"],
+        "exception_reason": plan["reason"],
+    }
 
 
 def build_storyboard(production_path: Path, questions_path: Path, storyboard_path: Path, opening_duration: float) -> dict[str, Any]:
@@ -164,23 +279,53 @@ def build_storyboard(production_path: Path, questions_path: Path, storyboard_pat
         raise StoryboardError("Final audio must be longer than one second for two template states.")
     questions, display = question_payload(questions_path, article.get("source_sha256"))
     opening_end = min(opening_duration, duration - 0.5)
-    asset_role, asset_file = approved_slide_asset(article, root)
+    cover_file = issue_cover(article, root)
+    article_assets = approved_article_assets(article, root)
     source_ids = sorted({source_id for question in questions for source_id in question["source_paragraph_ids"]})
+    opening = {
+        "id": "opening",
+        "template_role": "opening",
+        "start_seconds": 0,
+        "end_seconds": round(opening_end, 3),
+        "asset": {"role": "issue_cover", "id": "issue-cover", "file": cover_file},
+        "source_paragraph_ids": [],
+    }
+    slides, rotation_report = content_slides(opening_end, duration, article_assets, cover_file, source_ids)
     storyboard = {
         "format": STORYBOARD_FORMAT,
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "template_definition": "podcast-video-visual-system.v1.json",
         "article_source_sha256": article.get("source_sha256"),
         "display": display,
         "guide_questions": questions,
-        "slides": [
-            {"id": "opening", "template_role": "opening", "start_seconds": 0, "end_seconds": round(opening_end, 3), "asset": {"role": asset_role, "file": asset_file}, "source_paragraph_ids": []},
-            {"id": "guide-questions", "template_role": "guide_questions", "start_seconds": round(opening_end, 3), "end_seconds": duration, "asset": {"role": asset_role, "file": asset_file}, "source_paragraph_ids": source_ids},
-        ],
+        "media_policy": {
+            "opening": "issue_cover_required",
+            "content": "approved_article_assets_round_robin",
+            "target_seconds_per_asset": CONTENT_IMAGE_TARGET_SECONDS,
+            "minimum_seconds_per_asset": CONTENT_IMAGE_MIN_SECONDS,
+            "maximum_seconds_per_asset": CONTENT_IMAGE_MAX_SECONDS,
+            "fallback": "issue_cover_when_no_article_assets",
+            "animation": "none",
+            "transition": "none",
+            "image_fit": "contain_no_crop",
+        },
+        "media_rotation": rotation_report,
+        "slides": [opening, *slides],
     }
     validate_storyboard(storyboard, duration)
+    validate_storyboard_assets(storyboard, article, root)
     write_json(storyboard_path, storyboard)
     production.setdefault("artifacts", {})["storyboard"] = relative_path(storyboard_path, root)
+    production.setdefault("video", {}).setdefault("image_rotation", {}).update({
+        "opening_duration_seconds": round(opening_end, 3),
+        "target_dwell_seconds": CONTENT_IMAGE_TARGET_SECONDS,
+        "minimum_dwell_seconds": CONTENT_IMAGE_MIN_SECONDS,
+        "maximum_dwell_seconds": CONTENT_IMAGE_MAX_SECONDS,
+        "order": "source_round_robin",
+        "normalized_assets": rotation_report["normalized_assets"],
+        "actual_dwell_seconds": rotation_report["actual_dwell_seconds"],
+        "short_program_exception": rotation_report["short_program_exception"],
+    })
     write_json(production_path, production)
     return storyboard
 
@@ -195,9 +340,13 @@ def validate_storyboard(storyboard: dict[str, Any], duration: float) -> None:
     if not isinstance(slides, list) or len(slides) < 2:
         raise StoryboardError("storyboard needs at least opening and guide-question slides.")
     cursor = 0.0
-    for slide in slides:
+    for index, slide in enumerate(slides):
         if slide.get("template_role") not in {"opening", "guide_questions"}:
             raise StoryboardError("storyboard only supports opening and guide_questions template roles.")
+        if index == 0 and slide.get("template_role") != "opening":
+            raise StoryboardError("The first storyboard slide must use the opening template role.")
+        if index > 0 and slide.get("template_role") != "guide_questions":
+            raise StoryboardError("Every content slide must use the guide_questions template role.")
         start, end = slide.get("start_seconds"), slide.get("end_seconds")
         if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end <= start:
             raise StoryboardError("Every slide needs positive numeric start_seconds and end_seconds.")
@@ -206,9 +355,75 @@ def validate_storyboard(storyboard: dict[str, Any], duration: float) -> None:
         asset = slide.get("asset", {})
         if asset.get("role") not in {"issue_cover", "article_asset"} or not isinstance(asset.get("file"), str):
             raise StoryboardError("Every slide needs an approved issue_cover or article_asset file.")
+        if index == 0 and asset.get("role") != "issue_cover":
+            raise StoryboardError("The opening slide must use the verified issue cover.")
         cursor = float(end)
     if abs(cursor - duration) > 0.05:
         raise StoryboardError("Storyboard end_seconds must equal the final-audio duration.")
+
+
+def validate_storyboard_assets(storyboard: dict[str, Any], article: dict[str, Any], root: Path) -> None:
+    cover_file = issue_cover(article, root)
+    approved_assets = approved_article_assets(article, root)
+    approved_files = {asset["file"] for asset in approved_assets}
+    content_slides = storyboard["slides"][1:]
+    for index, slide in enumerate(storyboard["slides"]):
+        asset = slide["asset"]
+        asset_file = relative_path(package_path(root, asset["file"], f"asset for {slide['id']}"), root)
+        if index == 0:
+            if asset.get("role") != "issue_cover" or asset_file != cover_file:
+                raise StoryboardError("The opening slide must use article.issue_cover.file.")
+        elif approved_files:
+            if asset.get("role") != "article_asset" or asset_file not in approved_files:
+                raise StoryboardError("Content slides must use approved article images or charts.")
+        elif asset.get("role") != "issue_cover" or asset_file != cover_file:
+            raise StoryboardError("Content slides may use the issue cover only when no article assets exist.")
+
+    if approved_assets:
+        expected_files = [
+            approved_assets[index % len(approved_assets)]["file"]
+            for index in range(len(content_slides))
+        ]
+        actual_files = [slide["asset"]["file"] for slide in content_slides]
+        if actual_files != expected_files:
+            raise StoryboardError(
+                "Content-slide assets must follow strict source-order round-robin rotation."
+            )
+    elif any(slide["asset"]["file"] != cover_file for slide in content_slides):
+        raise StoryboardError("Issue-cover fallback must remain stable when no article assets exist.")
+
+    content_duration = sum(float(slide["end_seconds"]) - float(slide["start_seconds"]) for slide in content_slides)
+    selected_count = max(1, len(approved_assets))
+    short_program = content_duration < CONTENT_IMAGE_MIN_SECONDS * selected_count
+    if short_program:
+        if len(content_slides) != selected_count:
+            raise StoryboardError(
+                "A short programme must show every approved article asset exactly once."
+            )
+    else:
+        for slide in content_slides:
+            dwell = float(slide["end_seconds"]) - float(slide["start_seconds"])
+            if dwell < CONTENT_IMAGE_MIN_SECONDS - 0.01 or dwell > CONTENT_IMAGE_MAX_SECONDS + 0.01:
+                raise StoryboardError("Every content image must dwell for 18–22 seconds.")
+
+    rotation = storyboard.get("media_rotation")
+    if not isinstance(rotation, dict):
+        raise StoryboardError("storyboard media_rotation report is required.")
+    normalized_files = [asset.get("file") for asset in rotation.get("normalized_assets", [])]
+    if normalized_files != [asset["file"] for asset in approved_assets]:
+        raise StoryboardError("storyboard media_rotation assets do not match the normalized article assets.")
+    sequence_files = [item.get("file") for item in rotation.get("sequence", [])]
+    if sequence_files != [slide["asset"]["file"] for slide in content_slides]:
+        raise StoryboardError("storyboard media_rotation sequence does not match its content slides.")
+
+
+def storyboard_asset_hashes(storyboard: dict[str, Any], root: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for slide in storyboard["slides"]:
+        asset_file = slide["asset"]["file"]
+        if asset_file not in result:
+            result[asset_file] = sha256_file(package_path(root, asset_file, f"asset for {slide['id']}"))
+    return result
 
 
 def display_content(article: dict[str, Any], storyboard: dict[str, Any], caption_en: str, caption_zh: str) -> dict[str, Any]:
@@ -342,6 +557,7 @@ def render_storyboard(
     duration = audio_duration(audio)
     storyboard = read_json(storyboard_path)
     validate_storyboard(storyboard, duration)
+    validate_storyboard_assets(storyboard, article, root)
     definition = read_definition(TEMPLATE_PATH)
     destination = output_path(root, variant, voice_profile, aspect_ratio, subtitle_mode)
     fingerprint_inputs = {
@@ -350,6 +566,7 @@ def render_storyboard(
         "renderer": sha256_file(Path(__file__)),
         "display_renderer": sha256_file(SCRIPT_DIR / "preview_visual_system.py"), "aspect_ratio": aspect_ratio,
         "subtitle_mode": subtitle_mode,
+        "assets": storyboard_asset_hashes(storyboard, root),
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_inputs, sort_keys=True).encode()).hexdigest()
     output_key = f"{variant}/{voice_profile}/{aspect_ratio}" if subtitle_mode == "default" else f"{variant}/{voice_profile}/{subtitle_mode}/{aspect_ratio}"
@@ -384,7 +601,8 @@ def render_storyboard(
                 subtitle_mode,
             )
             render_diagnostics.append({
-                "start_seconds": round(start, 7), "end_seconds": round(end, 7), "caption_layout": caption_layout,
+                "start_seconds": round(start, 7), "end_seconds": round(end, 7),
+                "slide_id": slide["id"], "asset": slide["asset"], "caption_layout": caption_layout,
             })
             frame_path = temporary_path / f"frame-{index:05d}.png"
             frame.save(frame_path)
@@ -402,7 +620,11 @@ def render_storyboard(
     write_json(report_path, {
         "schema_version": "1.0", "variant": variant, "aspect_ratio": aspect_ratio, "subtitle_mode": subtitle_mode,
         "visible_caption_languages": ["en"] if subtitle_mode == "en-only" else (["zh"] if variant == "zh-CN" else ["en", "zh"]),
-        "caption_source": "structured" if structured_cues_path else "legacy_srt", "frames": render_diagnostics,
+        "caption_source": "structured" if structured_cues_path else "legacy_srt",
+        "asset_sha256": storyboard_asset_hashes(storyboard, root),
+        "media_rotation": storyboard.get("media_rotation", {}),
+        "image_frame": definition.get("design_tokens", {}).get("image_frame", {}),
+        "frames": render_diagnostics,
     })
     outputs = production.setdefault("video", {}).setdefault("outputs", {})
     outputs[output_key] = {
@@ -423,7 +645,7 @@ def render_storyboard(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    init = commands.add_parser("init-storyboard", help="Create the two-state storyboard after audio and canonical SRT are complete.")
+    init = commands.add_parser("init-storyboard", help="Create the issue-cover opening and rotating article-media storyboard after audio and canonical SRT are complete.")
     init.add_argument("production_json", type=Path)
     init.add_argument("guide_questions_json", type=Path)
     init.add_argument("storyboard_json", type=Path)

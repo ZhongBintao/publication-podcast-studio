@@ -80,12 +80,17 @@ artifacts.
 ## Default background music
 
 Every successful TTS media run automatically applies the skill's packaged
-three-part background-music bed. No extra user command is required. The
+three-part background-music bed. This requirement is identical for `en`,
+`en-zh` and `zh-CN`; generating a background stem without audible music in the
+canonical mix is a failed media run. No extra user command is required. The
 default mix keeps the original voice content at full level and uses independent
 background gains of `+8 dB` for opening, `+10 dB` for middle and `+8 dB` for
 ending. The middle section is intentionally slightly more present than the
-opening and ending. If their combination with the voice would clip, peak protection
-attenuates only the background and records the applied gains. If a packaged
+opening and ending. If their combination with the voice would clip, policy
+`local_window_ducking_v1` computes available headroom in 20 ms windows,
+attenuates only the local background immediately and restores it over 300 ms.
+Voice samples are never rewritten, and one full-scale voice window must not
+mute the programme-wide background. If a packaged
 asset is missing or cannot be decoded, the media run fails instead of silently
 producing a video without music.
 
@@ -120,17 +125,18 @@ The module writes these timeline-aligned tracks:
 - `audio/<language>/voice-track.wav`: the human voice padded with six seconds
   of leading silence and any trailing silence needed to share the background
   track's absolute clock.
-- `audio/<language>/background-music.wav`: one PCM background track assembled
-  from the three supplied files.
+- `audio/<language>/background-music.wav`: the effective timeline-aligned PCM
+  background track after local ducking.
 - `audio/<language>/final.wav`: the voice and section-gained background tracks
   mixed with voice-preserving peak protection; this is the canonical video
   audio input.
 - `audio/<language>/voice-only.wav`: the original concatenated TTS output kept
   for audit and rerun comparison.
 - `background-music.<language>.json`: frame-level placements, loop count,
-  input hashes, output hashes, requested and applied section gains, and peak
-  protection details. Old packages with one `gain_db` remain supported as a
-  uniform-gain fallback.
+  input hashes, output hashes, requested and applied section gains, local
+  scale minimum/average/maximum, ducked-window ratio, effective opening/middle/
+  ending RMS and clipping checks. Old packages with one `gain_db` remain
+  supported as a uniform-gain fallback.
 
 The timing contract is exact at the output sample rate: opening music starts at
 frame zero and is cut at six seconds; the middle track starts five seconds
@@ -140,6 +146,11 @@ voice. Gaps are silence. Input files are normalized to the completed voice
 WAV's PCM format; non-WAV inputs require local `ffmpeg`. The static-slide
 renderer already consumes the canonical mixed `final.wav`, so every successful
 video render carries the background music in its audio stream.
+
+Media completes only when the mixed WAV hash differs from `voice-track.wav`,
+every non-empty opening/middle/ending music placement has effective RMS above
+`-45 dBFS`, and `clipped_sample_count` is zero. A failed check marks the media
+run and background-music state `failed` and blocks video rendering.
 
 Speech delivery may be configured per language and speaker under
 `production.json.speech.delivery`. English defaults use structured DragonHD
@@ -162,11 +173,12 @@ If a required WordBoundary is missing, offsets are non-monotonic, translation
 phrases are empty, or cues overlap, the selected run becomes `failed` and no
 successful video stage may consume it.
 
-## Local bilingual-caption rebuild
+## Local caption rebuild
 
-After a reviewed subtitle script is finalised, regenerate bilingual caption
-artifacts without Azure TTS or Speech Translation. This uses the existing
-English WAV and `alignment.en.json` only:
+Regenerate the selected variant's caption artifacts without Azure TTS or
+Speech Translation. For `en-zh`, this uses the reviewed subtitle script and
+`alignment.en.json`; for `en` and `zh-CN`, it rebuilds readable approved-script
+cues from the existing language alignment only:
 
 ```bash
 "$RUNTIME_PY" skills/economist-azure-speech-media/scripts/azure_speech_media.py \

@@ -60,6 +60,7 @@ CREATIVE_OPENING_TARGET_WORDS = 45
 CREATIVE_CLOSING_TARGET_WORDS = 40
 CREATIVE_MAX_SEGMENTS = 4
 SCRIPT_POLICY_VERSION = "5.2"
+CHINESE_SCRIPT_POLICY_VERSION = "5.3"
 SPEAKER_SCHEDULE_POLICY = "seeded_constrained_random"
 MECHANICAL_ALTERNATION_WINDOW = 6
 UNLINKED_WRAPPER_FACT = re.compile(r"(?:\d|[%$£€¥])")
@@ -854,23 +855,48 @@ def init_production(
         article_relative = str(article_path.resolve().relative_to(package_root.resolve()))
     except ValueError:
         article_relative = str(article_path.resolve())
+    policy_version = CHINESE_SCRIPT_POLICY_VERSION if variant == "zh-CN" else SCRIPT_POLICY_VERSION
     production = {
         "state": "queued",
         "variant": variant,
         "article": {"path": article_relative, "source_sha256": article["source_sha256"]},
         "script_generation": {
             "provider": "codex-skill",
-            "policy_version": SCRIPT_POLICY_VERSION,
-            "policy": "source_bounded_conversational_rewrite",
+            "policy_version": policy_version,
+            "policy": (
+                "source_bounded_chinese_two_host_structure"
+                if variant == "zh-CN" else "source_bounded_conversational_rewrite"
+            ),
             "zh_punctuation_retry_limit": 1,
+            **({"framing_polish_retry_limit": 1} if variant == "zh-CN" else {}),
         },
-        "creative_frame": {
+        "creative_frame": ({
+            "enabled": True,
+            "source_policy": CREATIVE_FRAME_POLICY,
+            "opening": {
+                "segments": 3,
+                "speaker_order": ["primary", "secondary", "primary"],
+                "max_readable_characters_per_segment": 48,
+                "max_readable_characters": 144,
+            },
+            "closing": {
+                "segments": 2,
+                "speaker_order": ["primary", "secondary"],
+                "max_readable_characters_per_segment": 48,
+                "max_readable_characters": 72,
+            },
+            "long_article_interactions": {
+                "minimum_source_paragraphs": 20,
+                "required_prompt_answer_pairs": 4,
+                "distribution": "source_paragraph_quarters",
+            },
+        } if variant == "zh-CN" else {
             "enabled": True,
             "source_policy": CREATIVE_FRAME_POLICY,
             "media_mode": CREATIVE_FRAME_MEDIA_MODE,
             "opening": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
             "closing": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
-        },
+        }),
         "languages": languages,
         "speakers": {"primary": "primary", "secondary": "secondary"},
         "target_duration_minutes": {"minimum": 8, "maximum": 12, "policy": "coverage_first"},
@@ -910,6 +936,18 @@ def init_production(
         "progress": {"segments": {}},
         "failures": [],
     }
+    production.setdefault("background_music", {}).setdefault("zh-CN" if variant == "zh-CN" else "en", {}).update({
+        "required": True,
+        "match_english_default": True,
+        "mix_policy": "local_window_ducking_v1",
+    })
+    production.setdefault("video", {})["image_rotation"] = {
+        "opening_duration_seconds": 8.0,
+        "target_dwell_seconds": 20.0,
+        "minimum_dwell_seconds": 18.0,
+        "maximum_dwell_seconds": 22.0,
+        "order": "source_round_robin",
+    }
     if variant in {"en", "en-zh"}:
         production["speaker_schedule"] = {
             **schedule,
@@ -947,7 +985,19 @@ def validate_frozen_speaker_schedule(
     if policy_version and policy_version != SCRIPT_POLICY_VERSION and "speaker_schedule" not in production:
         return
     schedule = production_speaker_schedule(article, production_path)
-    opening, body, closing = candidate_sections(segments)
+    # ``segments`` is the canonical flat script array, whereas
+    # ``candidate_sections`` treats any array as a legacy body-only draft.
+    # Split fixed wrappers explicitly so validation reproduces the same body
+    # schedule that ``finalize_english`` generated.
+    opening_end = 0
+    while opening_end < len(segments) and segments[opening_end]["kind"] == "opening":
+        opening_end += 1
+    closing_start = len(segments)
+    while closing_start > opening_end and segments[closing_start - 1]["kind"] == "closing":
+        closing_start -= 1
+    opening = segments[:opening_end]
+    body = segments[opening_end:closing_start]
+    closing = segments[closing_start:]
     expected = assign_speaker_schedule(body, schedule["seed"], prefix=opening, suffix=closing)
     actual_speakers = [segment["speaker_id"] for segment in body]
     expected_speakers = [segment["speaker_id"] for segment in expected]

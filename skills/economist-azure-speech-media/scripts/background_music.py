@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from array import array
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import math
 import shutil
 import struct
 import subprocess
+import sys
 import wave
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -20,6 +22,10 @@ VOICE_START_SECONDS = 6.0
 MIDDLE_DELAY_AFTER_VOICE_SECONDS = 5.0
 ENDING_LEAD_SECONDS = 3.0
 DEFAULT_SECTION_GAINS_DB = {"opening": 8.0, "middle": 10.0, "ending": 8.0}
+MIX_POLICY_VERSION = "local_window_ducking_v1"
+DUCK_WINDOW_SECONDS = 0.020
+DUCK_RECOVERY_SECONDS = 0.300
+MIN_EFFECTIVE_BACKGROUND_RMS_DBFS = -45.0
 DEFAULT_BACKGROUND_MUSIC_DIR = Path(__file__).resolve().parents[1] / "assets" / "background-music"
 DEFAULT_BACKGROUND_MUSIC_FILES = {
     "opening": DEFAULT_BACKGROUND_MUSIC_DIR / "opening.mp3",
@@ -201,9 +207,17 @@ def _repeat_to_length(frames: bytes, frame_width: int, frame_count: int) -> byte
 
 
 def mix_audio_tracks(
-    voice: AudioBuffer, background: AudioBuffer, gain_db: float = 0.0, return_report: bool = False,
-) -> AudioBuffer | tuple[AudioBuffer, dict[str, Any]]:
-    """Mix aligned tracks while reducing only background if clipping would occur."""
+    voice: AudioBuffer,
+    background: AudioBuffer,
+    gain_db: float = 0.0,
+    return_report: bool = False,
+    return_background: bool = False,
+) -> AudioBuffer | tuple[AudioBuffer, dict[str, Any]] | tuple[AudioBuffer, AudioBuffer, dict[str, Any]]:
+    """Mix aligned tracks with immediate 20 ms ducking and a 300 ms recovery.
+
+    Voice samples remain unchanged. A full-scale voice sample can silence only
+    its local window; it can no longer zero the background for the whole show.
+    """
     if voice.format != background.format or voice.frame_count != background.frame_count:
         raise BackgroundMusicError("Voice and background tracks must have identical PCM formats and lengths.")
     if voice.format.sample_width != 2:
@@ -214,33 +228,140 @@ def mix_audio_tracks(
         raise BackgroundMusicError("Background music gain must be a finite number of decibels.") from error
     if not math.isfinite(gain) or gain < 0:
         raise BackgroundMusicError("Background music gain must be a finite non-negative level.")
-    voice_samples = [sample[0] for sample in struct.iter_unpack("<h", voice.frames)]
-    background_samples = [round(sample[0] * gain) for sample in struct.iter_unpack("<h", background.frames)]
-    background_scale = 1.0
-    for voice_sample, background_sample in zip(voice_samples, background_samples):
-        if not background_sample:
-            continue
-        # Calculate the available headroom in the direction the background is
-        # moving. The voice remains unmodified; only this global background
-        # scale is reduced when an actual sum would clip.
-        limit = ((32767 - voice_sample) / background_sample if background_sample > 0
-                 else (-32768 - voice_sample) / background_sample)
-        background_scale = min(background_scale, max(0.0, limit))
+    voice_samples = array("h")
+    voice_samples.frombytes(voice.frames)
+    raw_background_samples = array("h")
+    raw_background_samples.frombytes(background.frames)
+    if sys.byteorder != "little":
+        voice_samples.byteswap()
+        raw_background_samples.byteswap()
+    background_samples = array("i", (round(sample * gain) for sample in raw_background_samples))
+    samples_per_window = max(
+        voice.format.channels,
+        round(voice.format.sample_rate * DUCK_WINDOW_SECONDS) * voice.format.channels,
+    )
+    recovery_windows = max(1, round(DUCK_RECOVERY_SECONDS / DUCK_WINDOW_SECONDS))
+    recovery_step = 1.0 / recovery_windows
+    window_scales: list[float] = []
+    previous_scale = 1.0
+    for start in range(0, len(voice_samples), samples_per_window):
+        end = min(len(voice_samples), start + samples_per_window)
+        target_scale = 1.0
+        for voice_sample, background_sample in zip(voice_samples[start:end], background_samples[start:end]):
+            if not background_sample:
+                continue
+            limit = (
+                (32767 - voice_sample) / background_sample
+                if background_sample > 0
+                else (-32768 - voice_sample) / background_sample
+            )
+            target_scale = min(target_scale, max(0.0, limit))
+        if target_scale < previous_scale:
+            applied_scale = target_scale
+        else:
+            applied_scale = min(target_scale, previous_scale + recovery_step)
+        applied_scale = min(1.0, max(0.0, applied_scale))
+        window_scales.append(applied_scale)
+        previous_scale = applied_scale
+
     mixed = bytearray()
+    effective_background = bytearray()
     peak = 0
-    for voice_sample, background_sample in zip(voice_samples, background_samples):
-        value = round(voice_sample + background_sample * background_scale)
+    clipped_sample_count = 0
+    for sample_index, (voice_sample, background_sample) in enumerate(zip(voice_samples, background_samples)):
+        scale = window_scales[min(len(window_scales) - 1, sample_index // samples_per_window)]
+        effective_sample = round(background_sample * scale)
+        value = voice_sample + effective_sample
+        if value < -32768 or value > 32767:
+            clipped_sample_count += 1
         value = max(-32768, min(32767, value))
         peak = max(peak, abs(value))
+        effective_background.extend(struct.pack("<h", max(-32768, min(32767, effective_sample))))
         mixed.extend(struct.pack("<h", value))
     result = AudioBuffer(voice.format, bytes(mixed))
+    effective_track = AudioBuffer(background.format, bytes(effective_background))
+    minimum_scale = min(window_scales, default=1.0)
+    average_scale = sum(window_scales) / len(window_scales) if window_scales else 1.0
+    maximum_scale = max(window_scales, default=1.0)
+    ducked_windows = sum(scale < 0.999999 for scale in window_scales)
     report = {
-        "peak_protection_applied": background_scale < 0.999999,
-        "background_scale": round(background_scale, 9),
-        "background_attenuation_db": round(20 * math.log10(background_scale), 7) if background_scale else None,
+        "strategy": MIX_POLICY_VERSION,
+        "window_milliseconds": round(DUCK_WINDOW_SECONDS * 1000, 3),
+        "recovery_milliseconds": round(DUCK_RECOVERY_SECONDS * 1000, 3),
+        "window_count": len(window_scales),
+        "peak_protection_applied": ducked_windows > 0,
+        "background_scale": round(minimum_scale, 9),
+        "background_scale_min": round(minimum_scale, 9),
+        "background_scale_average": round(average_scale, 9),
+        "background_scale_max": round(maximum_scale, 9),
+        "ducked_window_ratio": round(ducked_windows / len(window_scales), 9) if window_scales else 0.0,
+        "background_attenuation_db": round(20 * math.log10(minimum_scale), 7) if minimum_scale else None,
+        "background_average_attenuation_db": round(20 * math.log10(average_scale), 7) if average_scale else None,
         "mixed_peak_sample": peak,
+        "clipped_sample_count": clipped_sample_count,
     }
+    if return_background:
+        return result, effective_track, report
     return (result, report) if return_report else result
+
+
+def audio_rms_dbfs(audio: AudioBuffer, start_frame: int, end_frame: int) -> float | None:
+    start_frame = max(0, min(audio.frame_count, int(start_frame)))
+    end_frame = max(start_frame, min(audio.frame_count, int(end_frame)))
+    byte_start = start_frame * audio.format.frame_width
+    byte_end = end_frame * audio.format.frame_width
+    selected = memoryview(audio.frames)[byte_start:byte_end]
+    sample_count = len(selected) // 2
+    if sample_count <= 0:
+        return None
+    square_sum = sum(sample[0] * sample[0] for sample in struct.iter_unpack("<h", selected))
+    mean_square = square_sum / sample_count
+    if mean_square <= 0:
+        return None
+    return round(20 * math.log10(math.sqrt(mean_square) / 32768.0), 7)
+
+
+def background_audibility_report(
+    voice_track: AudioBuffer,
+    effective_background: AudioBuffer,
+    mixed_track: AudioBuffer,
+    timeline: dict[str, Any],
+    peak_protection: dict[str, Any],
+) -> dict[str, Any]:
+    sections: dict[str, Any] = {}
+    for label in DEFAULT_SECTION_GAINS_DB:
+        placement = timeline["placements"][label]
+        start_frame = int(placement["start_frame"])
+        end_frame = int(placement["end_frame"])
+        played_frames = max(0, end_frame - start_frame)
+        rms = audio_rms_dbfs(effective_background, start_frame, end_frame)
+        required = played_frames > 0
+        sections[label] = {
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "played_frames": played_frames,
+            "effective_background_rms_dbfs": rms,
+            "minimum_rms_dbfs": MIN_EFFECTIVE_BACKGROUND_RMS_DBFS,
+            "status": (
+                "passed" if required and rms is not None and rms > MIN_EFFECTIVE_BACKGROUND_RMS_DBFS
+                else "failed" if required else "not_applicable"
+            ),
+        }
+    voice_hash = sha256_bytes(voice_track.frames)
+    mixed_hash = sha256_bytes(mixed_track.frames)
+    required_sections_pass = all(
+        item["status"] in {"passed", "not_applicable"} for item in sections.values()
+    )
+    checks = {
+        "mixed_differs_from_voice_track": mixed_hash != voice_hash,
+        "required_sections_audible": required_sections_pass,
+        "pcm_clipping_absent": peak_protection["clipped_sample_count"] == 0,
+    }
+    return {
+        "status": "passed" if all(checks.values()) else "failed",
+        "checks": checks,
+        "sections": sections,
+    }
 
 
 def build_background_timeline(
@@ -420,16 +541,34 @@ def add_background_music(
     background_path = output_dir / "background-music.wav"
     mixed_path = mixed_output_path.resolve() if mixed_output_path is not None else output_dir / "mixed-with-background-music.wav"
     timeline_path = root / f"background-music.{selected_language}.json"
-    mixed_track, peak_protection = mix_audio_tracks(voice_track, background_track, return_report=True)
+    mixed_track, effective_background_track, peak_protection = mix_audio_tracks(
+        voice_track,
+        background_track,
+        return_report=True,
+        return_background=True,
+    )
+    audibility = background_audibility_report(
+        voice_track,
+        effective_background_track,
+        mixed_track,
+        timeline,
+        peak_protection,
+    )
+    average_attenuation = peak_protection.get("background_average_attenuation_db")
     applied_gains = {
-        label: (round(gain + peak_protection["background_attenuation_db"], 7)
-                if peak_protection["background_attenuation_db"] is not None else None)
+        label: (round(gain + average_attenuation, 7) if average_attenuation is not None else None)
         for label, gain in section_gains.items()
     }
     write_wav(voice_track_path, voice_track)
-    write_wav(background_path, background_track)
+    write_wav(background_path, effective_background_track)
     write_wav(mixed_path, mixed_track)
     timeline.update({
+        "mix_policy": {
+            "version": MIX_POLICY_VERSION,
+            "window_milliseconds": round(DUCK_WINDOW_SECONDS * 1000, 3),
+            "recovery_milliseconds": round(DUCK_RECOVERY_SECONDS * 1000, 3),
+            "voice_samples_modified": False,
+        },
         "inputs": {
             "voice": {"path": relative_path(voice_path, root), "sha256": sha256_file(voice_path)},
             "opening": {"path": input_path_reference(opening_path, root), "sha256": sha256_file(opening_path)},
@@ -438,7 +577,7 @@ def add_background_music(
         },
         "outputs": {
             "voice_track": {"path": relative_path(voice_track_path, root), "sha256": sha256_file(voice_track_path), "duration_seconds": round(voice_track.duration_seconds, 7)},
-            "background_music": {"path": relative_path(background_path, root), "sha256": sha256_file(background_path), "duration_seconds": round(background_track.duration_seconds, 7)},
+            "background_music": {"path": relative_path(background_path, root), "sha256": sha256_file(background_path), "duration_seconds": round(effective_background_track.duration_seconds, 7)},
             "mixed_audio": {
                 "path": relative_path(mixed_path, root), "sha256": sha256_file(mixed_path),
                 "duration_seconds": round(mixed_track.duration_seconds, 7),
@@ -447,6 +586,7 @@ def add_background_music(
         },
         "peak_protection": peak_protection,
         "applied_gains_db": applied_gains,
+        "audibility": audibility,
     })
     write_json(timeline_path, timeline)
 
@@ -459,15 +599,24 @@ def add_background_music(
     })
     background_config = production.setdefault("background_music", {}).setdefault(selected_language, {})
     background_config.update({
-        "state": "complete",
+        "state": "complete" if audibility["status"] == "passed" else "failed",
         "provider": "local_pcm_timeline",
+        "mix_policy": MIX_POLICY_VERSION,
         "timeline": relative_path(timeline_path, root),
         "rules": timeline["rules"],
         "gains_db": section_gains,
         "applied_gains_db": applied_gains,
         "peak_protection": peak_protection,
+        "audibility": audibility,
     })
+    if audibility["status"] != "passed":
+        production["state"] = "failed"
     write_json(production_path, production)
+    if audibility["status"] != "passed":
+        failed_checks = [name for name, passed in audibility["checks"].items() if not passed]
+        raise BackgroundMusicError(
+            "Background music audibility gate failed: " + ", ".join(failed_checks)
+        )
     return {
         "status": "complete",
         "language": selected_language,

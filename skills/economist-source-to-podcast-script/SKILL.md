@@ -39,6 +39,12 @@ The style boundary is deliberately narrow:
 - Chinese may use light spoken connectors such as “其实”“你看”“问题是”“确实”
   and “说白了” when they do not add a new claim. Keep Chinese sentences short,
   natural and read-as-written; do not translate the English fillers literally.
+- New `zh-CN` productions use policy 5.3 from the dedicated
+  `economist-chinese-source-to-podcast-script` stage: a three-turn
+  primary/secondary/primary opening, a two-turn primary/secondary closing and,
+  for articles of at least 20 paragraphs, four prompt/answer pairs distributed
+  across source-paragraph quarters. Legacy body-only Chinese packages remain
+  readable.
 - English `source_speaker_id` and `partner_speaker_id` are suggested roles, not
   fixed assignments. Both hosts may deliver factual units from one paragraph.
   The English finaliser applies a saved `seeded_constrained_random` schedule:
@@ -108,30 +114,31 @@ regeneration.
    script before media production; `zh-CN` creates only `script.zh-CN.json`
    using steps 2--4.
 
-2. For `zh-CN` only, emit the compact Chinese source payload. It has source IDs and cleaned
-   verified English only; it does not contain English TTS punctuation changes:
+2. For `zh-CN` only, use the dedicated Chinese writing request. It has source
+   IDs and cleaned verified English only; it does not contain English TTS
+   punctuation changes:
 
    ```bash
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py translation-request ARTICLE.json
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py chinese-request ARTICLE.json
    ```
 
-   Translate every paragraph faithfully into a source-linked body-only JSON
-   array. Use the five script fields and preserve the supplied `speaker_id`
-   for each paragraph. Preserve facts, numbers, attribution, conditions and
-   judgments. Do not add a title, introduction, conclusion, explanation,
-   question, response or commentary. Translate meaning rather than English
-   word order: split or merge sentences, reorder clauses inside the same
-   source paragraph, and use natural Chinese subjects and connectors when
-   needed for spoken flow. Prefer common Chinese names. A proper name may
+   Translate every paragraph faithfully into the `body` array, then add only
+   the controlled policy-5.3 `opening` and `closing` wrappers. Preserve facts,
+   numbers, attribution, conditions and judgments. Translate meaning rather
+   than English word order: split or merge sentences, reorder clauses inside
+   the same source paragraph, and use natural Chinese subjects and connectors
+   when needed for spoken flow. Prefer common Chinese names. A proper name may
    remain as bare English only when that is natural; never write
    Chinese-plus-English aliases, parentheses, bracketed notes, or comma-wrapped
-   names and conversions.
+   names and conversions. Run the compact wrapper-polish request once before
+   freezing; it never resends the full article.
 
-3. Freeze the Chinese script deterministically. This reassigns IDs while
-   preserving the paragraph-level `speaker_id` assignments:
+3. Run the one-pass wrapper polish and freeze the Chinese script
+   deterministically. This reassigns IDs while preserving source links:
 
    ```bash
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py finalize-zh ARTICLE.json zh-body.json script.zh-CN.json
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py framing-polish-request ARTICLE.json chinese-draft.json
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py apply-framing-polish ARTICLE.json chinese-draft.json framing-polish-draft.json script.zh-CN.json
    ```
 
 4. Validate the selected script. For `en` and `en-zh`:
@@ -147,16 +154,16 @@ regeneration.
    For `zh-CN`:
 
    ```bash
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py validate ARTICLE.json script.zh-CN.json --language zh-CN
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py validate ARTICLE.json script.zh-CN.json
    ```
 
-   If Chinese punctuation validation fails, generate one minimal retry payload
+   If Chinese punctuation, framing or interaction validation fails, generate one minimal retry payload
    and retry only its source paragraphs. Apply the returned body-only patch,
    then validate again. A second failure blocks that language.
 
    ```bash
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py retry-request ARTICLE.json script.zh-CN.json --attempt 1
-   "$RUNTIME_PY" skills/economist-source-to-podcast-script/scripts/source_to_podcast_script.py apply-zh-retry ARTICLE.json script.zh-CN.json zh-retry-body.json script.zh-CN.json
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py retry-request ARTICLE.json script.zh-CN.json --attempt 1
+   "$RUNTIME_PY" skills/economist-chinese-source-to-podcast-script/scripts/chinese_source_to_podcast_script.py apply-retry ARTICLE.json script.zh-CN.json zh-retry.json script.zh-CN.json
    ```
 
 5. For `en-zh`, print the compact source-linked caption request after freezing
@@ -195,7 +202,12 @@ regeneration.
      ARTICLE.json editorial-draft.json editorial-assets.json --production production.json
    ```
 
-   The finaliser validates the source links, fixed publication-title wrapper,
+   The writing model returns only a 12--28-character `title_body_zh` after
+   silently comparing three content-based candidates. It must distil the central
+   change or mechanism and its tension or stakes rather than translate the source
+   headline. The finaliser adds the fixed publication-title wrapper and rejects a
+   title body that repeats or closely matches `display.headline_zh`. It validates
+   the title's source links alongside the
    question depth/length and distinct three-line cover-copy contracts, performs zero-token local OCR on
    `assets/issue-cover.png`, writes `publish-copy.md`, and renders the shared
    `release/covers/cover-16x9.png` and `release/covers/cover-9x16.png` from

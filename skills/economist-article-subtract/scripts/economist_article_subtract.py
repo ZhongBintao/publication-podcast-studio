@@ -490,7 +490,13 @@ def finalize(args: argparse.Namespace) -> int:
             target = target.with_suffix(".png")
             crop_region(Path(request["source_pdf"]), asset, target)
             name = str(Path(name).with_suffix(".png"))
-        assets.append({**asset, "file": name, "extraction_method": method})
+        canonical_role = asset.get("role") or asset.get("kind")
+        assets.append({
+            **asset,
+            "role": canonical_role,
+            "file": name,
+            "extraction_method": method,
+        })
     package = {
         "source_pdf": request["source_pdf"], "source_sha256": request["source_sha256"], "review_status": "verified", "article": model["article"],
         "article_pages": scope["article_pages"], "text_regions": request["text_regions"], "excluded_regions": model.get("excluded_regions", scope.get("excluded_regions", [])),

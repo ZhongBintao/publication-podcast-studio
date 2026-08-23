@@ -66,21 +66,46 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
 
     def framed_candidate(self):
         return {
-            "opening": [{
-                "segment_id": "opening-draft",
-                "speaker_id": "primary",
-                "kind": "opening",
-                "spoken_text": "欢迎收听今天的外刊播客。我们先从一个看似简单的问题聊起。",
-                "source_paragraph_ids": [],
-            }],
+            "opening": [
+                {
+                    "segment_id": "opening-hook",
+                    "speaker_id": "primary",
+                    "kind": "opening",
+                    "spoken_text": "一个模型创造了岗位，却也留下了难以判断的变化。",
+                    "source_paragraph_ids": ["p001"],
+                },
+                {
+                    "segment_id": "opening-question",
+                    "speaker_id": "secondary",
+                    "kind": "opening",
+                    "spoken_text": "这些变化究竟说明了什么？",
+                    "source_paragraph_ids": ["p001", "p002"],
+                },
+                {
+                    "segment_id": "opening-bridge",
+                    "speaker_id": "primary",
+                    "kind": "opening",
+                    "spoken_text": "我们沿着报道给出的线索往下看。",
+                    "source_paragraph_ids": [],
+                },
+            ],
             "body": self.candidate(),
-            "closing": [{
-                "segment_id": "closing-draft",
-                "speaker_id": "secondary",
-                "kind": "closing",
-                "spoken_text": "今天的内容就聊到这里，感谢你的收听。",
-                "source_paragraph_ids": [],
-            }],
+            "closing": [
+                {
+                    "segment_id": "closing-summary",
+                    "speaker_id": "primary",
+                    "kind": "closing",
+                    "spoken_text": "变化已经出现，但公司也承认，结果仍不确定。",
+                    "source_paragraph_ids": ["p003"],
+                },
+                {
+                    "segment_id": "closing-signoff",
+                    "speaker_id": "secondary",
+                    "kind": "closing",
+                    "spoken_text": "这次就聊到这里，我们下期再见。",
+                    "source_paragraph_ids": [],
+                },
+            ],
         }
 
     def test_request_contains_oral_and_mixed_language_contract(self):
@@ -91,7 +116,9 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
         self.assertEqual(payload["paragraphs"][0]["max_caption_unit_chars"], 48)
         self.assertNotIn("spoken_text", payload["paragraphs"][0])
         self.assertEqual(payload["framing"]["opening"]["kind"], "opening")
-        self.assertEqual(payload["framing"]["closing"]["speaker_id"], "secondary")
+        self.assertEqual(payload["framing"]["opening"]["speaker_order"], ["primary", "secondary", "primary"])
+        self.assertEqual(payload["framing"]["closing"]["speaker_order"], ["primary", "secondary"])
+        self.assertEqual(payload["script_policy_version"], "5.3")
 
     def test_finalize_allows_source_linked_prompt_and_reaction(self):
         result = MODULE.finalize_chinese(self.paragraphs, self.candidate())
@@ -116,20 +143,21 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
         result = MODULE.finalize_chinese(self.paragraphs, self.framed_candidate())
         self.assertEqual(result[0]["kind"], "opening")
         self.assertEqual(result[-1]["kind"], "closing")
-        self.assertEqual(result[0]["source_paragraph_ids"], [])
+        self.assertEqual(result[0]["source_paragraph_ids"], ["p001"])
         self.assertEqual(result[-1]["source_paragraph_ids"], [])
-        self.assertEqual([item["segment_id"] for item in result], [f"zh-CN-{index:03d}" for index in range(1, 8)])
-        self.assertEqual([item["kind"] for item in result[1:-1]], [item["kind"] for item in self.candidate()])
+        self.assertEqual([item["segment_id"] for item in result], [f"zh-CN-{index:03d}" for index in range(1, 11)])
+        self.assertEqual([item["kind"] for item in result[3:-2]], [item["kind"] for item in self.candidate()])
 
     def test_unlinked_wrapper_cannot_introduce_numeric_fact(self):
         candidate = self.framed_candidate()
         candidate["opening"][0]["spoken_text"] = "欢迎收听，这是 2025 年的一场讨论。"
+        candidate["opening"][0]["source_paragraph_ids"] = []
         with self.assertRaisesRegex(ValueError, "unlinked opening/closing"):
             MODULE.finalize_chinese(self.paragraphs, candidate)
 
     def test_unlinked_wrapper_cannot_introduce_source_specific_name(self):
         candidate = self.framed_candidate()
-        candidate["opening"][0]["spoken_text"] = "今天我们来聊聊 OpenAI。"
+        candidate["opening"][2]["spoken_text"] = "接下来我们看看 OpenAI。"
         with self.assertRaisesRegex(ValueError, "source-specific names"):
             MODULE.finalize_chinese(self.paragraphs, candidate)
 
@@ -150,16 +178,63 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
         repaired = MODULE.apply_retry(
             self.paragraphs,
             invalid,
-            {"opening": [{
-                "segment_id": "opening-retry",
-                "speaker_id": "primary",
-                "kind": "opening",
-                "spoken_text": "欢迎收听今天的外刊播客。",
-                "source_paragraph_ids": [],
-            }]},
+            {"opening": self.framed_candidate()["opening"]},
         )
-        self.assertEqual(repaired[0]["spoken_text"], "欢迎收听今天的外刊播客。")
+        self.assertEqual(repaired[0]["spoken_text"], self.framed_candidate()["opening"][0]["spoken_text"])
         self.assertEqual(repaired[-1]["spoken_text"], valid[-1]["spoken_text"])
+
+    def test_template_opening_and_fact_plus_signoff_single_turn_are_rejected(self):
+        candidate = self.framed_candidate()
+        candidate["opening"][0]["spoken_text"] = "欢迎收听，我们从报道里的模型说起。"
+        with self.assertRaisesRegex(ValueError, "prohibited programme boilerplate"):
+            MODULE.finalize_chinese(self.paragraphs, candidate)
+        candidate = self.framed_candidate()
+        candidate["closing"] = [candidate["closing"][0]]
+        with self.assertRaisesRegex(ValueError, "exactly 2"):
+            MODULE.finalize_chinese(self.paragraphs, candidate)
+
+    def test_long_article_requires_prompt_answer_pair_in_each_quarter(self):
+        paragraphs = [
+            {"order": index, "text": f"Source paragraph {index} reports one result."}
+            for index in range(1, 21)
+        ]
+        body = []
+        anchors = {1, 6, 11, 16}
+        for index in range(1, 21):
+            speaker = "primary" if index % 2 else "secondary"
+            source_id = f"p{index:03d}"
+            if index in anchors:
+                body.append({
+                    "segment_id": f"prompt-{index}",
+                    "speaker_id": "secondary" if speaker == "primary" else "primary",
+                    "kind": "prompt",
+                    "spoken_text": "这一段的关键是什么？",
+                    "source_paragraph_ids": [source_id],
+                })
+            body.append({
+                "segment_id": f"fact-{index}",
+                "speaker_id": speaker,
+                "kind": "sentence_split",
+                "spoken_text": f"来源第{index}段报告了一项结果。",
+                "source_paragraph_ids": [source_id],
+            })
+        result = MODULE.finalize_chinese(paragraphs, body)
+        self.assertEqual(sum(item["kind"] == "prompt" for item in result), 4)
+        body = [item for item in body if item["segment_id"] != "prompt-16"]
+        with self.assertRaisesRegex(ValueError, "one in each source-paragraph quarter"):
+            MODULE.finalize_chinese(paragraphs, body)
+
+    def test_framing_polish_payload_is_compact_and_preserves_body(self):
+        payload = MODULE.framing_polish_payload(self.article, self.paragraphs, self.framed_candidate())
+        self.assertEqual(set(payload["current"]), {"opening", "closing"})
+        self.assertEqual(payload["body_context"]["first_segment"], self.candidate()[0])
+        self.assertNotIn("paragraphs", payload)
+        polished = MODULE.apply_framing_polish(
+            self.paragraphs,
+            self.framed_candidate(),
+            {"opening": self.framed_candidate()["opening"], "closing": self.framed_candidate()["closing"]},
+        )
+        self.assertEqual([item["kind"] for item in polished[3:-2]], [item["kind"] for item in self.candidate()])
 
     def test_retry_only_requests_affected_paragraph(self):
         candidate = self.candidate()
