@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Azure Speech Media"
+  short_description: "Create one selected audio and caption variant"
+  default_prompt: "Use $publication-azure-speech-media to synthesize the frozen publication variant and write canonical mixed audio, alignment, and captions."

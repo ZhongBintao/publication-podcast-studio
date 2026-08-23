@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Content Extract"
+  short_description: "Verify one article or a complete short issue"
+  default_prompt: "Use $publication-content-extract to preflight and extract the confirmed article or complete short publication into a verified source package."

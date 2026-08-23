@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "files": {
+    "opening": "opening.mp3",
+    "middle": "middle-loop.mp3",
+    "ending": "ending.mp3"
+  },
+  "timing": {
+    "voice_lead_in_seconds": 6.0,
+    "middle_delay_after_voice_seconds": 5.0,
+    "ending_lead_before_voice_end_seconds": 3.0
+  },
+  "default_background_gain_db": -18.0
+}

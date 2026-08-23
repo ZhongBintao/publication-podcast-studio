@@ -1,0 +1,35 @@
+{
+  "name": "publication-podcast-studio",
+  "version": "1.0.0+codex.20260823",
+  "description": "Turn one article or a complete short English-language magazine or newspaper into source-linked bilingual podcast-video packages.",
+  "author": {
+    "name": "Publication Podcast Studio"
+  },
+  "keywords": [
+    "publication",
+    "magazine",
+    "newspaper",
+    "podcast",
+    "bilingual",
+    "video"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Publication Podcast Studio",
+    "shortDescription": "Create bilingual podcasts from magazines and newspapers",
+    "longDescription": "Extract a selected article or every editorial item in a short issue, write source-linked English or Chinese podcast scripts, synthesize aligned audio and captions, and render collision-safe 9:16 or 16:9 static-slide videos.",
+    "developerName": "Publication Podcast Studio",
+    "category": "Creativity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Turn this short newspaper into a bilingual podcast video",
+      "Make a podcast from one article in this magazine PDF",
+      "Render my completed publication package without text overlap"
+    ],
+    "brandColor": "#D71920"
+  }
+}

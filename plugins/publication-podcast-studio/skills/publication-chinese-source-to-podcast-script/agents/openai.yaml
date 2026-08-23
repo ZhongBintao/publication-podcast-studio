@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Chinese Podcast Writer"
+  short_description: "Write natural, source-linked Chinese podcast scripts"
+  default_prompt: "Use $publication-chinese-source-to-podcast-script to write the confirmed article or short issue as a natural, source-linked Chinese two-host podcast script."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Static-Slide Video"
+  short_description: "Render collision-safe publication podcast videos"
+  default_prompt: "Use $publication-static-slide-video to create an alignment-aware, collision-safe storyboard and render the frozen publication variant without regenerating audio or captions."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Podcast Script"
+  short_description: "Write source-linked scripts and natural Chinese copy"
+  default_prompt: "Use $publication-source-to-podcast-script to turn the verified publication package into a source-linked English script, reviewed bilingual captions, and meaning-first Chinese editorial copy."

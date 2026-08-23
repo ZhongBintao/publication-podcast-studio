@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Podcast Studio Workflow"
+  short_description: "Run article or short-issue podcast production"
+  default_prompt: "Use $publication-podcast-studio-workflow to preflight and confirm one publication request, then run every frozen product and render collision-safe outputs."
