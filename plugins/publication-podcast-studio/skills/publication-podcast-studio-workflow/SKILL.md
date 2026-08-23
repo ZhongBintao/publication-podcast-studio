@@ -22,6 +22,12 @@ Do not ask for item-by-item approval in short-issue mode. Lead selection,
 episode order, complete paragraph coverage and layout safety are automated
 gates after the single confirmation.
 
+English and Chinese writing both use the policy-5.3 framing arc. The opening
+must move from a lead-source hook to listening value and a body handoff; the
+closing must move from a source-supported payoff to an opening callback and a
+source-free sign-off. A failed wrapper receives one wrapper-only rewrite, so a
+good body is never regenerated merely to repair an introduction or ending.
+
 ```bash
 RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
 "$RUNTIME_PY" skills/publication-podcast-studio-workflow/scripts/publication_podcast_studio_workflow.py run \

@@ -40,6 +40,35 @@ class SourceToPodcastScriptTests(unittest.TestCase):
             for paragraph in self.paragraphs
         ]
 
+    def framed_english_candidate(self, body=None):
+        return {
+            "opening": [
+                {
+                    "segment_id": "opening-hook", "speaker_id": "primary", "kind": "opening",
+                    "spoken_text": "The first fact creates the tension at the centre of this story.",
+                    "source_paragraph_ids": ["p001"],
+                },
+                {
+                    "segment_id": "opening-handoff", "speaker_id": "primary", "kind": "opening",
+                    "spoken_text": "The details show why that tension is worth following.",
+                    "source_paragraph_ids": [],
+                },
+            ],
+            "body": body if body is not None else self.build_body_candidate(),
+            "closing": [
+                {
+                    "segment_id": "closing-payoff", "speaker_id": "secondary", "kind": "closing",
+                    "spoken_text": "That first tension is still the point to remember.",
+                    "source_paragraph_ids": ["p001"],
+                },
+                {
+                    "segment_id": "closing-signoff", "speaker_id": "secondary", "kind": "closing",
+                    "spoken_text": "For now, thanks for listening.",
+                    "source_paragraph_ids": [],
+                },
+            ],
+        }
+
     def test_english_source_keeps_factual_parenthetical_content(self):
         self.assertEqual(
             MODULE.english_spoken_source("A fact (ie, detail)—continues."),
@@ -178,6 +207,9 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         self.assertEqual(request["creative_frame"]["enabled"], True)
         self.assertEqual(request["creative_frame"]["source_policy"], "source_bounded_delivery_only")
         self.assertEqual(request["creative_frame"]["media_mode"], "audio_and_bilingual_captions")
+        self.assertEqual(request["creative_frame"]["arc_policy"], MODULE.CREATIVE_FRAME_ARC_POLICY)
+        self.assertEqual(request["creative_frame"]["anchor_source_paragraph_id"], "p001")
+        self.assertEqual(request["creative_frame"]["opening"]["min_segments"], 2)
         self.assertEqual(request["creative_frame"]["opening"]["max_segments"], 4)
         self.assertEqual(request["creative_frame"]["closing"]["target_words"], 40)
         self.assertEqual(request["speaker_schedule"]["mode"], "seeded_constrained_random")
@@ -185,42 +217,66 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         self.assertTrue(request["speaker_schedule"]["avoid_mechanical_alternation"])
 
     def test_finalize_english_places_creative_opening_and_closing_around_body(self):
-        candidate = {
-            "opening": [{
-                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
-                "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
-            }],
-            "body": [
-                {
-                    "segment_id": f"draft-{paragraph['order']}", "speaker_id": MODULE.speaker_for_paragraph(paragraph["order"], len(self.paragraphs)),
-                    "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
-                    "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
-                }
-                for paragraph in self.paragraphs
-            ],
-            "closing": [{
-                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
-                "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
-            }],
-        }
+        candidate = self.framed_english_candidate()
         result = MODULE.finalize_english(self.paragraphs, candidate)
         self.assertEqual(result[0]["kind"], "opening")
         self.assertEqual(result[-1]["kind"], "closing")
-        self.assertEqual(result[0]["source_paragraph_ids"], [])
+        self.assertEqual(result[0]["source_paragraph_ids"], ["p001"])
         self.assertEqual(result[-1]["source_paragraph_ids"], [])
         MODULE.validate_coverage(self.paragraphs, result, speaker_policy="english")
 
+    def test_english_framing_retry_repairs_only_failed_wrappers(self):
+        candidate = self.framed_english_candidate()
+        candidate["opening"] = candidate["opening"][1:]
+        payload = MODULE.english_framing_retry_payload(self.article, self.paragraphs, candidate, 1)
+        self.assertEqual(payload["repair"], {"opening": True, "closing": False})
+        repaired = MODULE.apply_english_framing_retry(
+            self.paragraphs,
+            candidate,
+            {"opening": self.framed_english_candidate()["opening"]},
+        )
+        self.assertEqual(repaired[0]["source_paragraph_ids"], ["p001"])
+        self.assertEqual(repaired[-2]["spoken_text"], candidate["closing"][0]["spoken_text"])
+        with self.assertRaisesRegex(ValueError, "retry limit"):
+            MODULE.english_framing_retry_payload(self.article, self.paragraphs, candidate, 2)
+
+    def test_short_issue_framing_anchors_to_lead_without_linking_other_items(self):
+        source = {
+            "review_status": "verified", "source_sha256": "short-source", "content_mode": "short_issue",
+            "source_language": "en",
+            "publication": {"name": "City Ledger", "display_name": "城市纪事", "kind": "newspaper"},
+            "front_page": {"file": "assets/front.png"},
+            "content_units": [
+                {"content_unit_id": "lead", "source_order": 2, "editorial_priority": 1, "episode_order": 1, "is_lead_story": True, "kind": "article", "metadata": {"headline": "Lead"}, "paragraph_ids": ["p001"]},
+                {"content_unit_id": "brief", "source_order": 1, "editorial_priority": 2, "episode_order": 2, "is_lead_story": False, "kind": "brief", "metadata": {"headline": "Brief"}, "paragraph_ids": ["p002"]},
+            ],
+            "paragraphs": [
+                {"id": "p001", "order": 1, "content_unit_id": "lead", "text": "The lead item changed the city."},
+                {"id": "p002", "order": 2, "content_unit_id": "brief", "text": "A separate brief records another event."},
+            ],
+            "assets": [],
+        }
+        article = MODULE.source_context(source, source["paragraphs"])
+        paragraphs = article["paragraphs"]
+        request = MODULE.english_request(article, paragraphs)
+        self.assertEqual(request["content_mode"], "short_issue")
+        self.assertEqual(request["creative_frame"]["anchor_source_paragraph_id"], "p001")
+        opening = self.framed_english_candidate()["opening"]
+        closing = self.framed_english_candidate()["closing"]
+        self.assertEqual(MODULE.wrapper_arc_issues(opening, closing, paragraphs), [])
+        self.assertNotIn("p002", {source_id for item in opening + closing for source_id in item["source_paragraph_ids"]})
+
     def test_unlinked_english_wrapper_cannot_introduce_source_fact(self):
         candidate = {
-            "opening": [{
-                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
-                "spoken_text": "In 2025, the market changed.", "source_paragraph_ids": [],
-            }],
+            "opening": [
+                {
+                    "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
+                    "spoken_text": "In 2025, the market changed.", "source_paragraph_ids": [],
+                },
+                self.framed_english_candidate()["opening"][1],
+            ],
             "body": self.build_body_candidate(),
-            "closing": [{
-                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
-                "spoken_text": "Thanks for listening.", "source_paragraph_ids": [],
-            }],
+            "closing": self.framed_english_candidate()["closing"],
         }
         with self.assertRaisesRegex(ValueError, "Unlinked opening/closing"):
             MODULE.finalize_english(self.paragraphs, candidate)
@@ -275,7 +331,7 @@ class SourceToPodcastScriptTests(unittest.TestCase):
         self.assertFalse(MODULE._mechanically_alternates([item["speaker_id"] for item in first]))
 
     def test_speaker_seed_uses_policy_version_and_init_can_freeze_explicit_seed(self):
-        expected = int(__import__("hashlib").sha256(b"source-hash:5.2").hexdigest()[:16], 16)
+        expected = int(__import__("hashlib").sha256(b"source-hash:5.3").hexdigest()[:16], 16)
         self.assertEqual(MODULE.speaker_seed("source-hash"), expected)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -316,41 +372,21 @@ class SourceToPodcastScriptTests(unittest.TestCase):
             article_path.write_text(json.dumps(self.article), encoding="utf-8")
             MODULE.init_production(article_path, production_path, "en", "region", ["16:9"], 2468)
             article, paragraphs = MODULE.load_article(article_path)
-            candidate = {
-                "opening": [{
-                    "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
-                    "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
-                }],
-                "body": self.build_body_candidate(),
-                "closing": [{
-                    "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
-                    "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
-                }],
-            }
+            candidate = self.framed_english_candidate()
             final = MODULE.finalize_english(paragraphs, candidate, 2468)
             MODULE.validate_frozen_speaker_schedule(article, paragraphs, final, production_path)
             self.assertEqual(final[0]["speaker_id"], "primary")
             self.assertEqual(final[-1]["speaker_id"], "secondary")
 
     def test_finalizer_ignores_draft_speaker_ids_and_fixed_wrappers(self):
-        candidate = {
-            "opening": [{
-                "segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening",
-                "spoken_text": "Welcome to the story we are about to unpack.", "source_paragraph_ids": [],
-            }],
-            "body": [
-                {
-                    "segment_id": f"draft-{paragraph['order']}", "speaker_id": "secondary",
-                    "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
-                    "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
-                }
-                for paragraph in self.paragraphs
-            ],
-            "closing": [{
-                "segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing",
-                "spoken_text": "That is the story for today.", "source_paragraph_ids": [],
-            }],
-        }
+        candidate = self.framed_english_candidate(body=[
+            {
+                "segment_id": f"draft-{paragraph['order']}", "speaker_id": "secondary",
+                "kind": "sentence_split", "spoken_text": f"Paragraph {paragraph['order']} is in the story.",
+                "source_paragraph_ids": [f"p{paragraph['order']:03d}"],
+            }
+            for paragraph in self.paragraphs
+        ])
         first = MODULE.finalize_english(self.paragraphs, candidate, 123)
         candidate["body"] = [dict(item, speaker_id="primary") for item in candidate["body"]]
         second = MODULE.finalize_english(self.paragraphs, candidate, 123)
@@ -514,7 +550,8 @@ class SourceToPodcastScriptTests(unittest.TestCase):
                 self.assertEqual(production["variant"], variant)
                 self.assertEqual(production["languages"], expected_languages)
                 self.assertEqual(set(production["artifacts"]), expected_artifacts)
-                self.assertEqual(production["script_generation"]["policy_version"], "5.2")
+                self.assertEqual(production["script_generation"]["policy_version"], "5.3")
+                self.assertEqual(production["script_generation"]["framing_retry_limit"], 1)
                 self.assertEqual(production["script_generation"]["policy"], "source_bounded_conversational_rewrite")
                 self.assertNotIn("key", json.dumps(production).lower())
             bilingual = json.loads((root / "en-zh.production.json").read_text(encoding="utf-8"))

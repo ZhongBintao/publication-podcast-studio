@@ -3,7 +3,7 @@
 Repository-local Codex plugin for turning an English-language magazine or
 newspaper PDF into a source-linked bilingual podcast-video package.
 
-Version 1.0 supports two source modes:
+Version 1.1 supports two source modes:
 
 - `article`: one user-selected article from any publication;
 - `short_issue`: every editorial item in a small issue, ordered lead first and
@@ -16,6 +16,10 @@ independently callable stages.
 The plugin preserves compatibility with historical Economist single-article
 packages through `lib/publication_package.py`. Compatibility is read-only: old
 packages are normalised in memory and are not rewritten.
+
+New English and Chinese scripts use a source-anchored opening and closing arc
+with one wrapper-only repair attempt. Existing policy-5.2 production packages
+remain readable and are not rewritten.
 
 ## Version policy
 

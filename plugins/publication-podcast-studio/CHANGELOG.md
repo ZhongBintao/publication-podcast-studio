@@ -3,6 +3,17 @@
 All notable changes to this plugin are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 1.1.0 - 2026-08-23
+
+- Upgraded English and Chinese script policy to 5.3 with a source-anchored
+  hook, listening-value handoff, source-supported payoff, opening callback and
+  source-free natural sign-off.
+- Added deterministic wrapper-arc validation for both article and short-issue
+  modes without phrase matching or topic-specific templates.
+- Added one bounded English wrapper-only retry and extended the Chinese retry
+  route to repair opening or closing without regenerating the body.
+- Preserved validation compatibility for existing policy-5.2 Chinese scripts.
+
 ## 1.0.0 - 2026-08-23
 
 - Created an independent `publication-podcast-studio` plugin from the proven

@@ -34,6 +34,8 @@ MAX_SPOKEN_SEGMENT_CHARS = 96
 MAX_CAPTION_UNIT_CHARS = 48
 MAX_OPENING_CHARS = 120
 MAX_CLOSING_CHARS = 120
+MIN_WRAPPER_SEGMENTS = SHARED.CREATIVE_MIN_SEGMENTS
+MAX_WRAPPER_SEGMENTS = SHARED.CREATIVE_MAX_SEGMENTS
 MAX_CONSECUTIVE_SEGMENTS = 3
 MAX_REACTION_CHARS = 24
 MAX_PROMPT_CHARS = 36
@@ -59,8 +61,10 @@ OUTPUT SHAPE
 
 - Return only a JSON object with three arrays: opening, body and closing.
 - Opening segments come first, body segments cover every supplied paragraph in order, and closing segments come last.
-- Each opening and closing block should be a short coherent passage, normally no more than 120 readable Chinese characters. Use primary for opening and secondary for closing.
+- Each opening and closing block contains two to four short segments and no more than 120 readable Chinese characters. Use primary for opening and secondary for closing.
 - A pure programme-framing segment may have an empty source_paragraph_ids array. If it states an article fact, number, judgment or concrete detail, cite one or more relevant source paragraph IDs.
+- 开头不要从“欢迎收听”“今天我们来聊聊”、节目名或照念标题开始。第一段直接进入素材里的矛盾、反差或问题，并且必须引用 anchor_source_paragraph_id；随后用一句说明收听价值，再自然承接正文第一点。短刊以头条内容为锚点，只提示内容范围，不暗示互不相关的条目存在因果关系。
+- 结尾先用来源支持的答案、张力或未决问题回应开头，至少一段引用 anchor_source_paragraph_id；最后单独用一句简短、温和且不带事实的告别，source_paragraph_ids 必须为空。不要只用“今天就聊到这里”一类套话承担全部收尾，也不要预告下一期。
 - Opening and closing may create suspense, ask why the topic matters, bridge into the story, summarize the reported arc, and thank listeners. Do not add unsupported facts, analysis, recommendations, predictions, conclusions or future-episode promises.
 
 SOURCE-BOUNDED ORAL ADAPTATION
@@ -89,7 +93,7 @@ TERMS AND MIXED ENGLISH
 
 OUTPUT
 
-Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify complete source coverage, source order, numeric preservation, natural Chinese rhythm, mixed-language readability, wrapper placement and two-host balance."""
+Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify the opening follows topic hook to listening value to body handoff; the closing follows source-supported payoff to opening callback to natural sign-off; source coverage and order are complete; numbers are preserved; Chinese rhythm and mixed-language readability are natural; and both hosts have substantive work."""
 
 
 def read_json(path: Path) -> Any:
@@ -175,6 +179,7 @@ def wrapper_issues(
     block: list[dict[str, Any]],
     kind: str,
     paragraphs: list[dict[str, Any]],
+    enforce_arc: bool = True,
 ) -> list[dict[str, str]]:
     """Validate the creative wrapper without treating it as article body coverage."""
     if not block:
@@ -191,6 +196,15 @@ def wrapper_issues(
     max_chars = MAX_OPENING_CHARS if kind == "opening" else MAX_CLOSING_CHARS
     total_chars = 0
     issues: list[dict[str, str]] = []
+    anchor_id = paragraph_id(paragraphs[0])
+    if enforce_arc and len(block) < MIN_WRAPPER_SEGMENTS:
+        purpose = "内容钩子和正文承接" if kind == "opening" else "内容回收和自然告别"
+        issues.append({
+            "section": kind,
+            "reason": f"{kind} needs at least {MIN_WRAPPER_SEGMENTS} segments for {purpose}",
+        })
+    if len(block) > MAX_WRAPPER_SEGMENTS:
+        raise ValueError(f"Chinese {kind} section must contain no more than {MAX_WRAPPER_SEGMENTS} segments.")
     for item in block:
         if not isinstance(item, dict) or set(item) != ALLOWED_FIELDS:
             raise ValueError("Every Chinese wrapper segment must contain exactly the five contract fields.")
@@ -223,6 +237,21 @@ def wrapper_issues(
             issues.append({"section": kind, "reason": "; ".join(reasons)})
     if total_chars > max_chars:
         raise ValueError(f"Chinese {kind} must be at most {max_chars} readable characters.")
+    if enforce_arc and kind == "opening" and anchor_id not in block[0]["source_paragraph_ids"]:
+        issues.append({
+            "section": "opening",
+            "reason": f"first opening segment must cite anchor source paragraph {anchor_id}",
+        })
+    if enforce_arc and kind == "closing" and not any(anchor_id in item["source_paragraph_ids"] for item in block):
+        issues.append({
+            "section": "closing",
+            "reason": f"closing must call back to anchor source paragraph {anchor_id}",
+        })
+    if enforce_arc and kind == "closing" and block[-1]["source_paragraph_ids"]:
+        issues.append({
+            "section": "closing",
+            "reason": "final closing segment must be a source-free programme sign-off",
+        })
     return issues
 
 
@@ -253,15 +282,24 @@ def request_payload(
         },
         "framing": {
             "output_shape": "object with opening, body and closing arrays",
+            "arc_policy": SHARED.CREATIVE_FRAME_ARC_POLICY,
+            "anchor_source_paragraph_id": paragraph_id(paragraphs[0]),
+            "retry_limit": SHARED.CREATIVE_FRAME_RETRY_LIMIT,
             "opening": {
                 "speaker_id": "primary",
                 "kind": "opening",
+                "min_segments": MIN_WRAPPER_SEGMENTS,
+                "max_segments": MAX_WRAPPER_SEGMENTS,
+                "required_moves": ["source_supported_hook", "listening_value", "body_handoff"],
                 "max_readable_characters": MAX_OPENING_CHARS,
                 "source_policy": "Empty source links are allowed only for generic programme framing; article facts require one or more source paragraph IDs.",
             },
             "closing": {
                 "speaker_id": "secondary",
                 "kind": "closing",
+                "min_segments": MIN_WRAPPER_SEGMENTS,
+                "max_segments": MAX_WRAPPER_SEGMENTS,
+                "required_moves": ["source_supported_payoff", "opening_callback", "source_free_signoff"],
                 "max_readable_characters": MAX_CLOSING_CHARS,
                 "source_policy": "Empty source links are allowed only for generic programme framing; article facts require one or more source paragraph IDs.",
             },
@@ -371,17 +409,6 @@ def validate_sequence(paragraphs: list[dict[str, Any]], grouped: dict[str, list[
             raise ValueError("Chinese host character balance failed: " + json.dumps({"counts": counts, "shares": shares}, ensure_ascii=False))
 
 
-def validate_speaker_runs(items: list[dict[str, Any]]) -> None:
-    run: list[dict[str, Any]] = []
-    for item in items:
-        if run and run[-1]["speaker_id"] != item["speaker_id"]:
-            run = [item]
-        else:
-            run.append(item)
-        if len(run) > MAX_CONSECUTIVE_SEGMENTS:
-            raise ValueError(f"Chinese script has more than {MAX_CONSECUTIVE_SEGMENTS} consecutive segments from one speaker.")
-
-
 def flattened_body(paragraphs: list[dict[str, Any]], grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     return [item for paragraph in paragraphs for item in grouped[paragraph_id(paragraph)]]
 
@@ -414,18 +441,19 @@ def split_final_script(script: Any) -> tuple[list[dict[str, Any]], list[dict[str
     return opening, body, closing
 
 
-def finalize_chinese(paragraphs: list[dict[str, Any]], candidate: Any) -> list[dict[str, Any]]:
+def finalize_chinese(
+    paragraphs: list[dict[str, Any]], candidate: Any, enforce_wrapper_arc: bool = True,
+) -> list[dict[str, Any]]:
     opening, body, closing = candidate_sections(candidate)
     if bool(opening) != bool(closing):
         raise ValueError("Chinese candidates with framing must contain both opening and closing sections.")
     opening_issues: list[dict[str, str]] = []
     closing_issues: list[dict[str, str]] = []
     if opening:
-        opening_issues = wrapper_issues(opening, "opening", paragraphs)
-        closing_issues = wrapper_issues(closing, "closing", paragraphs)
+        opening_issues = wrapper_issues(opening, "opening", paragraphs, enforce_wrapper_arc)
+        closing_issues = wrapper_issues(closing, "closing", paragraphs, enforce_wrapper_arc)
     grouped = grouped_candidate(paragraphs, body)
     validate_sequence(paragraphs, grouped)
-    validate_speaker_runs(opening + flattened_body(paragraphs, grouped) + closing)
     issues = opening_issues + closing_issues + chinese_lint_issues(paragraphs, grouped) + number_issues(paragraphs, grouped)
     if issues:
         raise ValueError("Chinese writing validation failed: " + json.dumps(issues, ensure_ascii=False))
@@ -467,7 +495,12 @@ def validate_final_script(article_path: Path, script_path: Path, production_path
     script = read_json(script_path)
     opening, body, closing = split_final_script(script)
     expected_candidate: Any = script if not opening else {"opening": opening, "body": body, "closing": closing}
-    expected = finalize_chinese(paragraphs, expected_candidate)
+    enforce_wrapper_arc = True
+    if production_path is not None:
+        production = read_json(production_path)
+        policy_version = production.get("script_generation", {}).get("policy_version")
+        enforce_wrapper_arc = policy_version == SHARED.SCRIPT_POLICY_VERSION
+    expected = finalize_chinese(paragraphs, expected_candidate, enforce_wrapper_arc=enforce_wrapper_arc)
     if expected != script:
         raise ValueError("The Chinese script is not in canonical finalizer form.")
     characters = sum(len(item["spoken_text"]) for item in script)
@@ -510,7 +543,11 @@ def retry_payload(article: dict[str, Any], paragraphs: list[dict[str, Any]], scr
         "source_sha256": article["source_sha256"],
         "language": "zh-CN",
         "attempt": attempt,
-        "instructions": CHINESE_STYLE_INSTRUCTIONS + "\nRewrite only the requested wrapper sections or source paragraphs and preserve every source number.",
+        "instructions": (
+            CHINESE_STYLE_INSTRUCTIONS
+            + "\nRewrite only the requested wrapper sections or source paragraphs and preserve every source number. "
+              "If only opening or closing is requested, keep the body unchanged."
+        ),
         "issues": issues,
         "paragraphs": [
             {"source_paragraph_id": source_id, "source_text": SHARED.chinese_translation_source(source_by_id[source_id]["text"])}
@@ -523,9 +560,21 @@ def retry_payload(article: dict[str, Any], paragraphs: list[dict[str, Any]], scr
         },
     }
     if "opening" in failed_sections:
-        payload["opening"] = {"current_segments": opening, "max_readable_characters": MAX_OPENING_CHARS}
+        payload["opening"] = {
+            "current_segments": opening,
+            "anchor_source_paragraph_id": paragraph_id(paragraphs[0]),
+            "min_segments": MIN_WRAPPER_SEGMENTS,
+            "max_segments": MAX_WRAPPER_SEGMENTS,
+            "max_readable_characters": MAX_OPENING_CHARS,
+        }
     if "closing" in failed_sections:
-        payload["closing"] = {"current_segments": closing, "max_readable_characters": MAX_CLOSING_CHARS}
+        payload["closing"] = {
+            "current_segments": closing,
+            "anchor_source_paragraph_id": paragraph_id(paragraphs[0]),
+            "min_segments": MIN_WRAPPER_SEGMENTS,
+            "max_segments": MAX_WRAPPER_SEGMENTS,
+            "max_readable_characters": MAX_CLOSING_CHARS,
+        }
     return payload
 
 

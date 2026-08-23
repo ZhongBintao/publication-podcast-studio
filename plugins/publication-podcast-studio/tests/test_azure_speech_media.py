@@ -188,23 +188,30 @@ class AzureSpeechMediaTests(unittest.TestCase):
         with temp:
             article = json.loads((root / "article.json").read_text(encoding="utf-8"))
             candidate = {
-                "opening": [{"segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening", "spoken_text": "Welcome to the story.", "source_paragraph_ids": []}],
+                "opening": [
+                    {"segment_id": "opening-hook", "speaker_id": "primary", "kind": "opening", "spoken_text": "The first point sets up this story.", "source_paragraph_ids": ["p001"]},
+                    {"segment_id": "opening-handoff", "speaker_id": "primary", "kind": "opening", "spoken_text": "Here is why it matters.", "source_paragraph_ids": []},
+                ],
                 "body": SOURCE.build_english(article["paragraphs"]),
-                "closing": [{"segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing", "spoken_text": "Thanks for listening.", "source_paragraph_ids": []}],
+                "closing": [
+                    {"segment_id": "closing-payoff", "speaker_id": "secondary", "kind": "closing", "spoken_text": "That first point still frames the result.", "source_paragraph_ids": ["p001"]},
+                    {"segment_id": "closing-signoff", "speaker_id": "secondary", "kind": "closing", "spoken_text": "For now, thanks for listening.", "source_paragraph_ids": []},
+                ],
             }
             script = SOURCE.finalize_english(article["paragraphs"], candidate)
             (root / "script.en.json").write_text(json.dumps(script), encoding="utf-8")
             provider = FakeAzureProvider()
             MEDIA.run_media(production_path, provider)
             self.assertEqual([call[2] for call in provider.synthesis_calls], [
-                "Welcome to the story.", "First source paragraph.", "Second source paragraph.", "Thanks for listening.",
+                "The first point sets up this story.", "Here is why it matters.", "First source paragraph.", "Second source paragraph.",
+                "That first point still frames the result.", "For now, thanks for listening.",
             ])
             alignment = json.loads((root / "alignment.en.json").read_text(encoding="utf-8"))
             self.assertEqual(alignment["segments"][0]["kind"], "opening")
             self.assertEqual(alignment["segments"][-1]["kind"], "closing")
             captions = (root / "captions.en.srt").read_text(encoding="utf-8")
-            self.assertIn("Welcome to the story.", captions)
-            self.assertIn("Thanks for listening.", captions)
+            self.assertIn("The first point sets up this story.", captions)
+            self.assertIn("For now, thanks for listening.", captions)
 
     def test_bilingual_variant_uses_one_translation_session_and_two_line_cues(self):
         temp, root, production_path = self.make_package("en-zh")
@@ -307,23 +314,32 @@ class AzureSpeechMediaTests(unittest.TestCase):
         with temp:
             article = json.loads((root / "article.json").read_text(encoding="utf-8"))
             candidate = {
-                "opening": [{"segment_id": "opening-draft", "speaker_id": "primary", "kind": "opening", "spoken_text": "欢迎收听今天的节目。", "source_paragraph_ids": []}],
+                "opening": [
+                    {"segment_id": "opening-hook", "speaker_id": "primary", "kind": "opening", "spoken_text": "第一段信息提出了今天的核心问题。", "source_paragraph_ids": ["p001"]},
+                    {"segment_id": "opening-handoff", "speaker_id": "primary", "kind": "opening", "spoken_text": "我们从这里说起。", "source_paragraph_ids": []},
+                ],
                 "body": [
                     {"segment_id": "body-1", "speaker_id": "primary", "kind": "sentence_split", "spoken_text": "第一段。", "source_paragraph_ids": ["p001"]},
                     {"segment_id": "body-2", "speaker_id": "secondary", "kind": "sentence_split", "spoken_text": "第二段。", "source_paragraph_ids": ["p002"]},
                 ],
-                "closing": [{"segment_id": "closing-draft", "speaker_id": "secondary", "kind": "closing", "spoken_text": "今天就聊到这里，谢谢收听。", "source_paragraph_ids": []}],
+                "closing": [
+                    {"segment_id": "closing-payoff", "speaker_id": "secondary", "kind": "closing", "spoken_text": "回到开头，第一段信息仍是理解结果的关键。", "source_paragraph_ids": ["p001"]},
+                    {"segment_id": "closing-signoff", "speaker_id": "secondary", "kind": "closing", "spoken_text": "我们先停在这里，感谢收听。", "source_paragraph_ids": []},
+                ],
             }
             (root / "script.zh-CN.json").write_text(json.dumps(CHINESE.finalize_chinese(article["paragraphs"], candidate), ensure_ascii=False), encoding="utf-8")
             provider = FakeAzureProvider()
             MEDIA.run_media(production_path, provider)
-            self.assertEqual([call[2] for call in provider.synthesis_calls], ["欢迎收听今天的节目。", "第一段。", "第二段。", "今天就聊到这里，谢谢收听。"])
+            self.assertEqual([call[2] for call in provider.synthesis_calls], [
+                "第一段信息提出了今天的核心问题。", "我们从这里说起。", "第一段。", "第二段。",
+                "回到开头，第一段信息仍是理解结果的关键。", "我们先停在这里，感谢收听。",
+            ])
             alignment = json.loads((root / "alignment.zh-CN.json").read_text(encoding="utf-8"))
             self.assertEqual(alignment["segments"][0]["kind"], "opening")
             self.assertEqual(alignment["segments"][-1]["kind"], "closing")
             self.assertLess(alignment["segments"][0]["end_seconds"], alignment["segments"][-1]["start_seconds"])
-            self.assertIn("欢迎收听今天的节目。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
-            self.assertIn("今天就聊到这里，谢谢收听。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
+            self.assertIn("第一段信息提出了今天的核心问题。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
+            self.assertIn("我们先停在这里，感谢收听。", (root / "captions.zh-CN.srt").read_text(encoding="utf-8"))
 
     def test_missing_word_boundaries_fails_without_translation(self):
         temp, root, production_path = self.make_package("en")

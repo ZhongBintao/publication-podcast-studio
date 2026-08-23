@@ -63,8 +63,11 @@ CREATIVE_FRAME_POLICY = "source_bounded_delivery_only"
 CREATIVE_FRAME_MEDIA_MODE = "audio_and_bilingual_captions"
 CREATIVE_OPENING_TARGET_WORDS = 45
 CREATIVE_CLOSING_TARGET_WORDS = 40
+CREATIVE_MIN_SEGMENTS = 2
 CREATIVE_MAX_SEGMENTS = 4
-SCRIPT_POLICY_VERSION = "5.2"
+CREATIVE_FRAME_ARC_POLICY = "hook_value_handoff_payoff_callback_signoff_v1"
+CREATIVE_FRAME_RETRY_LIMIT = 1
+SCRIPT_POLICY_VERSION = "5.3"
 SPEAKER_SCHEDULE_POLICY = "seeded_constrained_random"
 MECHANICAL_ALTERNATION_WINDOW = 6
 UNLINKED_WRAPPER_FACT = re.compile(r"(?:\d|[%$£€¥])")
@@ -96,9 +99,12 @@ Return an engaging programme opening, a source-linked conversational body, and a
 CREATIVE OPENING AND CLOSING
 
 - Return only a JSON object with three arrays: opening, body, and closing.
-- Opening segments come first, body segments cover every supplied paragraph in order, and closing segments come last. Each wrapper normally contains one to four short segments.
-- The opening may welcome listeners, frame the central question or tension, and create a reason to keep listening. It must bridge naturally into the first source-linked body segment.
-- The closing may recap the reported arc or source-supported tension, acknowledge what remains unresolved when the source does so, and thank listeners. It must not introduce a new fact, analysis, recommendation, prediction, conclusion, viewpoint, or future promise.
+- Opening segments come first, body segments cover every supplied paragraph in order, and closing segments come last. Each wrapper contains two to four short segments.
+- Do not begin with a generic greeting, the programme name, the article title, or a promise to “dive into”, “unpack” or “explore” the topic. Begin inside the story with a concrete source-supported tension, contrast or question. The first opening segment must cite anchor_source_paragraph_id.
+- Complete the opening by making the listening value clear and handing directly to the first body point. Do not repeat the hook, preview every section or say that you are about to read an article. In short_issue mode, anchor the opening in the lead item and preview breadth without implying that unrelated items are causally connected.
+- Begin the closing with a source-supported payoff: return to the opening anchor and state only the answer, tension or uncertainty the source supports. At least one closing segment must cite anchor_source_paragraph_id.
+- End with one brief, warm sign-off whose source_paragraph_ids is empty. Vary the wording naturally; do not use a future-episode promise or let a stock “that is all for today” line carry the whole closing.
+- The closing may acknowledge what remains unresolved when the source does so, but must not introduce a new fact, analysis, recommendation, prediction, conclusion or viewpoint.
 - A pure programme-framing segment may use an empty source_paragraph_ids array. If opening or closing text states an article fact, number, judgment, named entity, or concrete detail, cite one or more relevant source paragraph IDs.
 - Opening and closing are formal spoken units. They will be synthesized and included in English and bilingual captions.
 
@@ -150,7 +156,7 @@ Use opening and closing only in their corresponding wrapper arrays. In body use:
 
 Every body segment must reference exactly one supplied paragraph ID. Wrapper segments may use an empty list only for generic programme framing; any source-specific claim must cite known paragraph IDs. Keep reactions to 12 English words or fewer and prompts to 16 English words or fewer. Use normal conversational punctuation and do not end any segment with a comma, colon, dash, or semicolon.
 
-Before returning, silently verify: the opening and closing are present and placed correctly; all supplied paragraphs are covered in original order; no unsupported fact or viewpoint has been added; every long sentence has been rewritten into subtitle-safe spoken units; both hosts have substantive opportunities; the seeded schedule is natural rather than mechanically alternating; the factual word balance is near 50/50 when the script is long enough; no segment exceeds its supplied budget; and the result sounds like a composed two-host conversation."""
+Before returning, silently verify: the opening follows hook to listening value to body handoff; the closing follows source-supported payoff to opening callback to warm sign-off; all supplied paragraphs are covered in original order; no unsupported fact or viewpoint has been added; every long sentence has been rewritten into subtitle-safe spoken units; both hosts have substantive opportunities; the seeded schedule is natural rather than mechanically alternating; the factual word balance is near 50/50 when the script is long enough; no segment exceeds its supplied budget; and the result sounds like a composed two-host conversation."""
 RETRY_INSTRUCTIONS = (
     "Rewrite only these zh-CN source paragraphs. Preserve facts, numbers, attribution and order. "
     "Write natural spoken Chinese: use common Chinese names first, keep a bare English proper name only when it is natural, "
@@ -366,6 +372,53 @@ def validate_wrapper_block(
             re.search(rf"(?<![A-Za-z]){re.escape(token)}(?![A-Za-z])", text) for token in names
         )):
             raise ValueError("Unlinked opening/closing framing must not contain source-specific facts or names.")
+
+
+def wrapper_arc_issues(
+    opening: list[dict[str, Any]], closing: list[dict[str, Any]], paragraphs: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Return deterministic structural issues for the creative spoken arc.
+
+    Semantic naturalness remains a writing decision. These checks make the
+    minimum useful arc observable without matching fixed phrases or requiring
+    topic-specific vocabulary.
+    """
+    anchor_id = paragraph_id(paragraphs[0])
+    issues: list[dict[str, str]] = []
+    if len(opening) < CREATIVE_MIN_SEGMENTS:
+        issues.append({
+            "section": "opening",
+            "reason": f"opening needs at least {CREATIVE_MIN_SEGMENTS} segments for a hook and a body handoff",
+        })
+    if opening and anchor_id not in opening[0]["source_paragraph_ids"]:
+        issues.append({
+            "section": "opening",
+            "reason": f"first opening segment must cite anchor source paragraph {anchor_id}",
+        })
+    if len(closing) < CREATIVE_MIN_SEGMENTS:
+        issues.append({
+            "section": "closing",
+            "reason": f"closing needs at least {CREATIVE_MIN_SEGMENTS} segments for a payoff and a sign-off",
+        })
+    if closing and not any(anchor_id in item["source_paragraph_ids"] for item in closing):
+        issues.append({
+            "section": "closing",
+            "reason": f"closing must call back to anchor source paragraph {anchor_id}",
+        })
+    if closing and closing[-1]["source_paragraph_ids"]:
+        issues.append({
+            "section": "closing",
+            "reason": "final closing segment must be a source-free programme sign-off",
+        })
+    return issues
+
+
+def validate_wrapper_arc(
+    opening: list[dict[str, Any]], closing: list[dict[str, Any]], paragraphs: list[dict[str, Any]],
+) -> None:
+    issues = wrapper_arc_issues(opening, closing, paragraphs)
+    if issues:
+        raise ValueError("English opening/closing arc failed: " + json.dumps(issues, ensure_ascii=False))
 
 
 def _mechanically_alternates(speakers: list[str]) -> bool:
@@ -647,7 +700,7 @@ def english_request(
     units = {item["content_unit_id"]: item for item in article["content_units"]}
     return {
         "source_sha256": article["source_sha256"],
-        "content_mode": article["content_mode"],
+        "content_mode": article.get("content_mode", "article"),
         "publication": article["publication"],
         "language": "en",
         "instructions": ENGLISH_STYLE_INSTRUCTIONS,
@@ -661,10 +714,23 @@ def english_request(
         } for item in article["content_units"]],
         "creative_frame": {
             "enabled": True,
+            "arc_policy": CREATIVE_FRAME_ARC_POLICY,
+            "anchor_source_paragraph_id": paragraph_id(paragraphs[0]),
             "source_policy": CREATIVE_FRAME_POLICY,
             "media_mode": CREATIVE_FRAME_MEDIA_MODE,
-            "opening": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
-            "closing": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
+            "opening": {
+                "min_segments": CREATIVE_MIN_SEGMENTS,
+                "max_segments": CREATIVE_MAX_SEGMENTS,
+                "target_words": CREATIVE_OPENING_TARGET_WORDS,
+                "required_moves": ["source_supported_hook", "listening_value", "body_handoff"],
+            },
+            "closing": {
+                "min_segments": CREATIVE_MIN_SEGMENTS,
+                "max_segments": CREATIVE_MAX_SEGMENTS,
+                "target_words": CREATIVE_CLOSING_TARGET_WORDS,
+                "required_moves": ["source_supported_payoff", "opening_callback", "source_free_signoff"],
+            },
+            "retry_limit": CREATIVE_FRAME_RETRY_LIMIT,
         },
         "speaker_schedule": {
             **schedule,
@@ -752,6 +818,7 @@ def finalize_english(
     if opening:
         validate_wrapper_block(opening, "opening", paragraphs)
         validate_wrapper_block(closing, "closing", paragraphs)
+        validate_wrapper_arc(opening, closing, paragraphs)
     grouped = validate_english_candidate_body(paragraphs, body)
     body_segments = [item for paragraph in paragraphs for item in grouped[paragraph_id(paragraph)]]
     if speaker_seed is not None:
@@ -935,7 +1002,7 @@ def init_production(
     opening_seconds: float = 8.0,
     asset_dwell_target_seconds: float = 20.0,
 ) -> None:
-    article, _ = load_article(article_path)
+    article, paragraphs = load_article(article_path)
     duration = normalise_duration_policy(article, {
         "mode": duration_mode,
         **({"target_minutes": target_minutes} if target_minutes is not None else {}),
@@ -964,21 +1031,25 @@ def init_production(
     production = {
         "state": "queued",
         "variant": variant,
-        "content_mode": article["content_mode"],
+        "content_mode": article.get("content_mode", "article"),
         "publication": article["publication"],
         "article": {"path": article_relative, "source_sha256": article["source_sha256"]},
         "script_generation": {
             "provider": "codex-skill",
             "policy_version": SCRIPT_POLICY_VERSION,
             "policy": "source_bounded_conversational_rewrite",
+            "framing_retry_limit": CREATIVE_FRAME_RETRY_LIMIT,
             "zh_punctuation_retry_limit": 1,
         },
         "creative_frame": {
             "enabled": True,
+            "arc_policy": CREATIVE_FRAME_ARC_POLICY,
+            "anchor_source_paragraph_id": paragraph_id(paragraphs[0]),
             "source_policy": CREATIVE_FRAME_POLICY,
             "media_mode": CREATIVE_FRAME_MEDIA_MODE,
-            "opening": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
-            "closing": {"min_segments": 1, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
+            "opening": {"min_segments": CREATIVE_MIN_SEGMENTS, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_OPENING_TARGET_WORDS},
+            "closing": {"min_segments": CREATIVE_MIN_SEGMENTS, "max_segments": CREATIVE_MAX_SEGMENTS, "target_words": CREATIVE_CLOSING_TARGET_WORDS},
+            "retry_limit": CREATIVE_FRAME_RETRY_LIMIT,
         },
         "languages": languages,
         "speakers": {"primary": "primary", "secondary": "secondary"},
@@ -1022,7 +1093,7 @@ def init_production(
         "failures": [],
         "workflow": {
             "name": "publication-podcast-studio-workflow",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "request": {
                 "confirmation_status": "confirmed",
                 "content_mode": article["content_mode"],
@@ -1280,6 +1351,95 @@ def finalize_subtitles(article_path: Path, script_path: Path, draft_path: Path, 
         })
         write_json(production_path, production)
     return result
+
+
+def framed_candidate_sections(candidate: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Accept a draft object or an already canonical flat framed script."""
+    if not isinstance(candidate, list) or not any(
+        isinstance(item, dict) and item.get("kind") in WRAPPER_KINDS for item in candidate
+    ):
+        return candidate_sections(candidate)
+    opening_end = 0
+    while opening_end < len(candidate) and candidate[opening_end].get("kind") == "opening":
+        opening_end += 1
+    closing_start = len(candidate)
+    while closing_start > opening_end and candidate[closing_start - 1].get("kind") == "closing":
+        closing_start -= 1
+    opening = candidate[:opening_end]
+    body = candidate[opening_end:closing_start]
+    closing = candidate[closing_start:]
+    if not opening or not closing or any(item.get("kind") in WRAPPER_KINDS for item in body):
+        raise ValueError("English opening and closing segments must surround the body.")
+    return opening, body, closing
+
+
+def english_framing_retry_payload(
+    article: dict[str, Any], paragraphs: list[dict[str, Any]], candidate: Any, attempt: int,
+) -> dict[str, Any]:
+    """Request one bounded rewrite of only structurally weak wrappers."""
+    if attempt != 1:
+        raise ValueError("Automatic English opening/closing retry limit reached.")
+    opening, body, closing = framed_candidate_sections(candidate)
+    if not opening or not closing:
+        raise ValueError("English framing retry requires both opening and closing sections.")
+    validate_wrapper_block(opening, "opening", paragraphs)
+    validate_wrapper_block(closing, "closing", paragraphs)
+    validate_english_candidate_body(paragraphs, body)
+    issues = wrapper_arc_issues(opening, closing, paragraphs)
+    if not issues:
+        raise ValueError("English opening and closing have no retryable arc issues.")
+    failed_sections = list(dict.fromkeys(item["section"] for item in issues))
+    anchor_id = paragraph_id(paragraphs[0])
+    anchor = next(item for item in paragraphs if paragraph_id(item) == anchor_id)
+    payload: dict[str, Any] = {
+        "source_sha256": article["source_sha256"],
+        "content_mode": article.get("content_mode", "article"),
+        "language": "en",
+        "attempt": attempt,
+        "arc_policy": CREATIVE_FRAME_ARC_POLICY,
+        "anchor": {"source_paragraph_id": anchor_id, "source_text": english_spoken_source(anchor["text"])},
+        "instructions": (
+            ENGLISH_STYLE_INSTRUCTIONS
+            + "\nRewrite only the requested opening and/or closing arrays. Keep the body unchanged. "
+              "Return a JSON object containing only the requested wrapper arrays."
+        ),
+        "issues": issues,
+        "repair": {"opening": "opening" in failed_sections, "closing": "closing" in failed_sections},
+    }
+    if "opening" in failed_sections:
+        payload["opening"] = {"current_segments": opening}
+    if "closing" in failed_sections:
+        payload["closing"] = {"current_segments": closing}
+    return payload
+
+
+def apply_english_framing_retry(
+    paragraphs: list[dict[str, Any]], candidate: Any, patch: Any, speaker_seed_value: int | None = None,
+) -> list[dict[str, Any]]:
+    """Replace only failed English wrappers, then run the full finalizer once."""
+    opening, body, closing = framed_candidate_sections(candidate)
+    validate_wrapper_block(opening, "opening", paragraphs)
+    validate_wrapper_block(closing, "closing", paragraphs)
+    validate_english_candidate_body(paragraphs, body)
+    issues = wrapper_arc_issues(opening, closing, paragraphs)
+    failed_sections = {item["section"] for item in issues}
+    if not failed_sections:
+        raise ValueError("English opening and closing have no retryable arc issues.")
+    if not isinstance(patch, dict) or not set(patch).issubset({"opening", "closing"}):
+        raise ValueError("English framing retry patch must contain only opening and/or closing arrays.")
+    if any(not isinstance(value, list) for value in patch.values()):
+        raise ValueError("English framing retry patch sections must be arrays.")
+    for section in ("opening", "closing"):
+        if section in failed_sections and not patch.get(section):
+            raise ValueError(f"English framing retry patch is missing its {section} section.")
+        if section not in failed_sections and section in patch:
+            raise ValueError(f"English framing retry patch contains an unrequested {section} section.")
+    repaired = {
+        "opening": patch.get("opening", opening),
+        "body": body,
+        "closing": patch.get("closing", closing),
+    }
+    return finalize_english(paragraphs, repaired, speaker_seed_value)
 
 
 def retry_request(article: dict[str, Any], paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]], attempt: int) -> dict[str, Any]:
@@ -1542,7 +1702,7 @@ def validate_english_turn_balance(segments: list[dict[str, Any]]) -> None:
 
 def validate_english(
     paragraphs: list[dict[str, Any]], segments: list[dict[str, Any]], *,
-    strict_schedule: bool = False,
+    strict_schedule: bool = False, enforce_wrapper_arc: bool = False,
 ) -> list[str]:
     opening_end = 0
     while opening_end < len(segments) and segments[opening_end]["kind"] == "opening":
@@ -1553,6 +1713,8 @@ def validate_english(
     if opening_end:
         validate_wrapper_block(segments[:opening_end], "opening", paragraphs)
         validate_wrapper_block(segments[closing_start:], "closing", paragraphs)
+        if enforce_wrapper_arc:
+            validate_wrapper_arc(segments[:opening_end], segments[closing_start:], paragraphs)
     for segment in segments:
         if SPOKEN_BRACKETS.search(segment["spoken_text"]):
             raise ValueError("English script must not retain parenthetical or bracketed text.")
@@ -1575,13 +1737,18 @@ def validate_english(
 
 def validate_script(
     article_path: Path, script_path: Path, language: str, *, strict_schedule: bool = True,
+    enforce_wrapper_arc: bool = False,
 ) -> dict[str, Any]:
     _, paragraphs = load_article(article_path)
     segments = read_json(script_path)
     validate_structure(segments, language)
     validate_coverage(paragraphs, segments, speaker_policy="english" if language == "en" else "legacy")
     if language == "en":
-        warnings = validate_english(paragraphs, segments, strict_schedule=strict_schedule)
+        warnings = validate_english(
+            paragraphs, segments,
+            strict_schedule=strict_schedule,
+            enforce_wrapper_arc=enforce_wrapper_arc,
+        )
     else:
         issues = chinese_punctuation_issues(segments)
         if issues:
@@ -1621,6 +1788,22 @@ def main() -> int:
     english_finalize_parser.add_argument("candidate")
     english_finalize_parser.add_argument("output")
     english_finalize_parser.add_argument("--production")
+    english_framing_retry_parser = commands.add_parser(
+        "english-framing-retry-request",
+        help="Request the single allowed opening/closing-only English rewrite.",
+    )
+    english_framing_retry_parser.add_argument("article")
+    english_framing_retry_parser.add_argument("candidate")
+    english_framing_retry_parser.add_argument("--attempt", type=int, required=True)
+    apply_english_framing_retry_parser = commands.add_parser(
+        "apply-english-framing-retry",
+        help="Apply an opening/closing-only English retry patch.",
+    )
+    apply_english_framing_retry_parser.add_argument("article")
+    apply_english_framing_retry_parser.add_argument("candidate")
+    apply_english_framing_retry_parser.add_argument("patch")
+    apply_english_framing_retry_parser.add_argument("output")
+    apply_english_framing_retry_parser.add_argument("--production")
     request_parser = commands.add_parser("translation-request")
     request_parser.add_argument("article")
     subtitle_request_parser = commands.add_parser("subtitle-request", help="Print the source-linked request for reviewed en-zh captions.")
@@ -1710,6 +1893,31 @@ def main() -> int:
                 "duration": duration_report,
                 "warnings": english_delivery_warnings(segments),
             }, ensure_ascii=False))
+        elif args.command == "english-framing-retry-request":
+            article, paragraphs = load_article(Path(args.article))
+            payload = english_framing_retry_payload(
+                article, paragraphs, read_json(Path(args.candidate)), args.attempt,
+            )
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        elif args.command == "apply-english-framing-retry":
+            article, paragraphs = load_article(Path(args.article))
+            schedule = production_speaker_schedule(article, Path(args.production) if args.production else None)
+            segments = apply_english_framing_retry(
+                paragraphs,
+                read_json(Path(args.candidate)),
+                read_json(Path(args.patch)),
+                schedule["seed"],
+            )
+            duration = production_duration_policy(article, Path(args.production) if args.production else None)
+            duration_report = validate_duration(segments, "en", duration)
+            write_json(Path(args.output), segments)
+            print(json.dumps({
+                "status": "created",
+                "script": str(Path(args.output).resolve()),
+                "segments": len(segments),
+                "speaker_schedule": schedule,
+                "duration": duration_report,
+            }, ensure_ascii=False))
         elif args.command == "translation-request":
             article, paragraphs = load_article(Path(args.article))
             print(json.dumps(translation_request(article, paragraphs), ensure_ascii=False, indent=2))
@@ -1760,18 +1968,21 @@ def main() -> int:
             print(json.dumps({"status": "valid"}, ensure_ascii=False))
         else:
             strict_schedule = False
+            enforce_wrapper_arc = False
             if args.language == "en":
                 if not args.production:
                     strict_schedule = True
                 else:
                     production = read_json(Path(args.production))
+                    enforce_wrapper_arc = production.get("script_generation", {}).get("policy_version") == SCRIPT_POLICY_VERSION
                     strict_schedule = (
-                        production.get("script_generation", {}).get("policy_version") == SCRIPT_POLICY_VERSION
+                        enforce_wrapper_arc
                         or "speaker_schedule" in production
                     )
             result = validate_script(
                 Path(args.article), Path(args.script), args.language,
                 strict_schedule=strict_schedule,
+                enforce_wrapper_arc=enforce_wrapper_arc,
             )
             if args.language == "en" and args.production:
                 article, paragraphs = load_article(Path(args.article))

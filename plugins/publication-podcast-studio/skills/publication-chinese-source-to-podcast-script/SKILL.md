@@ -32,6 +32,15 @@ The result has `opening`, `body` and `closing`, then flattens into the canonical
 five-field TTS segment contract. Generic wrappers may have empty source links;
 source-specific wrapper language must cite verified paragraphs.
 
+新稿采用与英文一致的 5.3 开闭环结构。开头用两至四个短段落完成“来源锚定的
+内容钩子—收听价值—正文承接”，不能从“欢迎收听”、节目名或照念标题开始；
+结尾用两至四个短段落完成“来源支持的回收—回扣开头—自然告别”，最后的告别
+不带事实和来源链接。短刊以头条首段为锚点，但不得把互不相关的条目写成同一条
+因果链。
+
+结构、标点或数字问题只允许一次定向 `retry-request`；当问题只在开头或结尾时，
+返回的补丁不得改动正文，`apply-retry` 也只替换被点名的 wrapper。
+
 The target-cap finaliser estimates duration at 260 readable Chinese characters
 per minute. A punctuation failure retries only affected paragraphs once. A
 duration failure permits one complete source-preserving compression request.

@@ -43,6 +43,19 @@ cover content units once in frozen episode order and use natural transitions;
 do not invent relationships between neighbouring items or mechanically read
 every headline aloud.
 
+New scripts use the framing arc frozen in policy 5.3. The opening contains two
+to four short turns: enter through a source-linked hook anchored to the first
+lead paragraph, establish listening value, then hand directly to the body. The
+closing contains two to four short turns: give a source-supported payoff, call
+back to the same anchor, then end with one source-free natural sign-off. Generic
+greetings, title-reading and a stock farewell used as the whole wrapper fail
+the writing contract.
+
+If only this framing arc fails, do not regenerate the body. Run
+`english-framing-retry-request --attempt 1`, generate only the requested
+`opening` and/or `closing` arrays, then apply them with
+`apply-english-framing-retry`. A second framing retry is blocked.
+
 The target-cap finaliser estimates duration at 150 English words per minute.
 If the hard cap is exceeded, run `duration-retry-request --attempt 1`; this is
 the only automatic compression retry. It may condense wording but may not drop

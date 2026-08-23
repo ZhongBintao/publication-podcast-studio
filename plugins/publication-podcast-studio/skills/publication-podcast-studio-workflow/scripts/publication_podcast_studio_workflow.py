@@ -27,7 +27,7 @@ import static_slide_storyboard as storyboard  # type: ignore  # noqa: E402
 
 
 WORKFLOW_NAME = "publication-podcast-studio-workflow"
-WORKFLOW_VERSION = "1.0.0"
+WORKFLOW_VERSION = "1.1.0"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_ASPECT_RATIOS = {"16:9", "9:16"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
