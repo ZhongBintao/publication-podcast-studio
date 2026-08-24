@@ -10,6 +10,15 @@ meaning rather than English word order. Preserve every material fact, number,
 attribution, condition, judgment and degree of certainty; never add context,
 examples, analysis or conclusions.
 
+English numeric magnitude words and abbreviations must be localised for
+Chinese TTS without changing the value, precision, range endpoints or named
+currency. Use Arabic digits plus Chinese units: `200bn` becomes `2000亿`,
+`100 million` becomes `1亿`, and `$200bn` becomes `2000亿美元`. Do not retain
+or transliterate `m`, `bn`, `mn`, `trn`, `million`, `billion` or `trillion` in
+Chinese spoken text. The finaliser compares normalised numeric values and
+rejects a value that is rounded, changed, or merely copied with an English
+magnitude unit.
+
 Short-issue scripts cover every content unit once in `episode_order`. Transitions
 may orient the listener but cannot invent a relationship between items. Use
 short natural Chinese sentences, familiar Chinese names where established and

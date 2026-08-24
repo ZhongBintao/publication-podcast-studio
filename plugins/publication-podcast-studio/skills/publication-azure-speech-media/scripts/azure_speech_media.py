@@ -344,6 +344,16 @@ def load_credentials(env_file: Path | None = None) -> str:
     return key
 
 
+def production_env_file(production_path: Path) -> Path:
+    """Find the workspace dotenv above a production package without parsing it."""
+    package = production_path.resolve().parent
+    for directory in (package, *package.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return WORKSPACE_ENV_FILE
+
+
 def build_ssml(
     language: str,
     voice: str,
@@ -406,11 +416,11 @@ def build_ssml(
 class AzureSpeechProvider:
     """Thin live adapter; all secrets remain inside this process."""
 
-    def __init__(self, region: str):
+    def __init__(self, region: str, env_file: Path | None = None):
         if not region:
             raise MediaError("production.json needs an Azure Speech region.")
         self.region = region
-        self.key = load_credentials()
+        self.key = load_credentials(env_file)
         try:
             import azure.cognitiveservices.speech as speechsdk
             from azure.cognitiveservices.speech.translation import SpeechTranslationConfig, TranslationRecognizer
@@ -550,28 +560,82 @@ def cue_text(text: str, start: int, end: int) -> str:
     return re.sub(r"\s+", " ", text[start:end]).strip()
 
 
+def caption_break_end(text: str, word: dict[str, Any]) -> int | None:
+    """Return a source-text sentence or clause boundary after a word callback.
+
+    DragonHD word callbacks commonly omit punctuation. The approved script is
+    therefore the source of caption punctuation and boundaries, while the word
+    callback supplies the timing on either side of that source span.
+    """
+    word_end = int(word["text_offset"]) + int(word["word_length"])
+    if str(word.get("text", "")).endswith((".", "!", "?", ";", "。", "！", "？", "；")):
+        return word_end
+    match = re.match(r"\s*[.!?;。！？；]+", text[word_end:])
+    return word_end + len(match.group(0)) if match else None
+
+
 def script_cues(alignment: dict[str, Any], language: str) -> list[dict[str, Any]]:
+    maximum = MAX_CHINESE_CHARS if language == "zh-CN" else MAX_ENGLISH_CHARS
     groups: list[dict[str, Any]] = []
     for segment in alignment["segments"]:
         text = segment["spoken_text"]
         current: list[dict[str, Any]] = []
+        current_start: int | None = None
 
-        def flush() -> None:
+        def flush(end_offset: int | None = None) -> None:
+            nonlocal current_start
             if not current:
                 return
-            start_offset = current[0]["text_offset"]
-            end_offset = current[-1]["text_offset"] + current[-1]["word_length"]
+            start_offset = current_start if current_start is not None else current[0]["text_offset"]
+            end_offset = end_offset if end_offset is not None else current[-1]["text_offset"] + current[-1]["word_length"]
             start = current[0]["start_seconds"]
             end = current[-1]["end_seconds"]
             groups.append({"start_seconds": start, "end_seconds": end, "text": cue_text(text, start_offset, end_offset)})
             current.clear()
+            current_start = None
 
         for word in segment["words"]:
+            if not current:
+                current_start = int(word["text_offset"])
             current.append(word)
-            if word["text"].endswith((".", "!", "?", "。", "！", "？")):
-                flush()
+            word_end = int(word["text_offset"]) + int(word["word_length"])
+            prospective_end = caption_break_end(text, word) or word_end
+            prospective = cue_text(text, current_start if current_start is not None else current[0]["text_offset"], prospective_end)
+            if len(prospective) > maximum:
+                if len(current) == 1:
+                    raise MediaError("One approved caption token exceeds the configured display budget.")
+                overflow = current.pop()
+                # Prefer a word-boundary break before the preceding token.
+                # That keeps a comma between the two tokens with the second
+                # cue instead of making the first cue exceed its display
+                # budget merely to carry that comma.
+                carry = current.pop()
+                if current:
+                    flush(int(carry["text_offset"]))
+                    current.extend((carry, overflow))
+                    current_start = int(carry["text_offset"])
+                else:
+                    # A two-token cue can only be split at its direct token
+                    # boundary. Prefer preserving separator punctuation with
+                    # the first cue when it still fits.
+                    direct_end = int(overflow["text_offset"])
+                    current.append(carry)
+                    if len(cue_text(text, current_start if current_start is not None else int(carry["text_offset"]), direct_end)) <= maximum:
+                        flush(direct_end)
+                        current.append(overflow)
+                        current_start = int(overflow["text_offset"])
+                    else:
+                        carry_end = int(carry["text_offset"]) + int(carry["word_length"])
+                        flush(carry_end)
+                        current.append(overflow)
+                        current_start = carry_end
+            if (break_end := caption_break_end(text, word)) is not None:
+                flush(break_end)
         flush()
-    return normalize_cues(groups)
+    normalized = normalize_cues(groups)
+    if any(len(cue["text"]) > maximum for cue in normalized):
+        raise MediaError("Approved caption cue exceeds the configured display budget.")
+    return normalized
 
 
 def bilingual_display_cues(phrases: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -883,22 +947,36 @@ def materialize_reviewed_bilingual_captions(root: Path, production: dict[str, An
 
 
 def rebuild_captions(production_path: Path) -> dict[str, Any]:
-    """Rebuild reviewed en-zh captions from local script and WordBoundary artifacts only."""
+    """Rebuild canonical captions from local script and WordBoundary artifacts only."""
     production = read_json(production_path)
-    if production.get("variant") != "en-zh":
-        raise MediaError("Local caption rebuild is only required for the en-zh variant.")
+    variant = production.get("variant")
+    if variant not in VARIANTS:
+        raise MediaError("production.json needs one supported variant.")
     root = production_path.parent.resolve()
-    alignment_reference = production.get("artifacts", {}).get("alignment_en")
+    language = selected_language(variant)
+    suffix = "zh_cn" if language == "zh-CN" else "en"
+    alignment_reference = production.get("artifacts", {}).get(f"alignment_{suffix}")
     if not isinstance(alignment_reference, str):
-        raise MediaError("production.json has no English WordBoundary alignment.")
+        raise MediaError("production.json has no canonical WordBoundary alignment.")
     alignment_path = root / alignment_reference
     if not alignment_path.is_file():
-        raise MediaError("English WordBoundary alignment is missing.")
-    materialize_reviewed_bilingual_captions(root, production, read_json(alignment_path))
+        raise MediaError("Canonical WordBoundary alignment is missing.")
+    alignment = read_json(alignment_path)
+    artifacts = production.setdefault("artifacts", {})
+    if variant == "en-zh":
+        materialize_reviewed_bilingual_captions(root, production, alignment)
+    else:
+        cues = script_cues(alignment, language)
+        base = "captions.zh-CN" if language == "zh-CN" else "captions.en"
+        paths = write_captions(root, base, cues)
+        artifacts.update({
+            f"captions_{suffix}_srt": relative_path(Path(paths["srt"]), root),
+            f"captions_{suffix}_vtt": relative_path(Path(paths["vtt"]), root),
+        })
     production["state"] = "complete"
     production["failures"] = []
     write_json(production_path, production)
-    return {"status": "complete", "variant": "en-zh", "artifacts": production["artifacts"]}
+    return {"status": "complete", "variant": variant, "artifacts": production["artifacts"]}
 
 
 def load_cached_segment(cache_audio: Path, cache_meta: Path, fingerprint: str) -> dict[str, Any] | None:
@@ -925,7 +1003,7 @@ def run_media(production_path: Path, provider: Any | None = None) -> dict[str, A
         speech = production["speech"]
         voice = speech["voices"][language]
         if provider is None:
-            provider = AzureSpeechProvider(speech.get("region"))
+            provider = AzureSpeechProvider(speech.get("region"), production_env_file(production_path))
         work = root / ".work" / "azure-speech-media" / variant / "segments"
         work.mkdir(parents=True, exist_ok=True)
         production["failures"] = []

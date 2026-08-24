@@ -3,6 +3,16 @@
 All notable changes to this plugin are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 1.2.0 - 2026-08-24
+
+- Localised English magnitude numbers in Chinese spoken scripts while
+  preserving exact values, decimal precision, ranges and named currencies.
+- Added normalised numeric validation for `bn`, `million`, `trillion` and
+  Chinese `万` / `亿` / `万亿` expressions, with legacy-package compatibility.
+- Added source-media kind compatibility for `photo`, `chart` and `map` assets.
+- Added local-only caption rebuilding for English and Chinese variants and
+  preserved Azure credentials lookup at the production workspace boundary.
+
 ## 1.1.0 - 2026-08-23
 
 - Upgraded English and Chinese script policy to 5.3 with a source-anchored

@@ -20,6 +20,9 @@ VOICE_START_SECONDS = 6.0
 MIDDLE_DELAY_AFTER_VOICE_SECONDS = 5.0
 ENDING_LEAD_SECONDS = 3.0
 DEFAULT_SECTION_GAINS_DB = {"opening": 8.0, "middle": 10.0, "ending": 8.0}
+DUCK_WINDOW_SECONDS = 0.02
+DUCK_RECOVERY_SECONDS = 0.3
+MIN_PLAYED_MUSIC_DBFS = -45.0
 DEFAULT_BACKGROUND_MUSIC_DIR = Path(__file__).resolve().parents[1] / "assets" / "background-music"
 DEFAULT_BACKGROUND_MUSIC_FILES = {
     "opening": DEFAULT_BACKGROUND_MUSIC_DIR / "opening.mp3",
@@ -203,7 +206,13 @@ def _repeat_to_length(frames: bytes, frame_width: int, frame_count: int) -> byte
 def mix_audio_tracks(
     voice: AudioBuffer, background: AudioBuffer, gain_db: float = 0.0, return_report: bool = False,
 ) -> AudioBuffer | tuple[AudioBuffer, dict[str, Any]]:
-    """Mix aligned tracks while reducing only background if clipping would occur."""
+    """Mix aligned tracks with 20 ms local background ducking.
+
+    Voice samples are never changed. A global gain reduction is unsuitable here:
+    a single full-scale TTS sample could otherwise mute the music for an entire
+    programme. Instead, each short window is limited by its local headroom and
+    the background returns over 300 ms once headroom is available again.
+    """
     if voice.format != background.format or voice.frame_count != background.frame_count:
         raise BackgroundMusicError("Voice and background tracks must have identical PCM formats and lengths.")
     if voice.format.sample_width != 2:
@@ -216,31 +225,102 @@ def mix_audio_tracks(
         raise BackgroundMusicError("Background music gain must be a finite non-negative level.")
     voice_samples = [sample[0] for sample in struct.iter_unpack("<h", voice.frames)]
     background_samples = [round(sample[0] * gain) for sample in struct.iter_unpack("<h", background.frames)]
-    background_scale = 1.0
-    for voice_sample, background_sample in zip(voice_samples, background_samples):
+    def safe_background_scale(voice_sample: int, background_sample: int) -> float:
         if not background_sample:
-            continue
-        # Calculate the available headroom in the direction the background is
-        # moving. The voice remains unmodified; only this global background
-        # scale is reduced when an actual sum would clip.
-        limit = ((32767 - voice_sample) / background_sample if background_sample > 0
-                 else (-32768 - voice_sample) / background_sample)
-        background_scale = min(background_scale, max(0.0, limit))
+            return 1.0
+        # Keep one sample of headroom for the added background so a sum that
+        # lands exactly on full scale is never emitted as a newly clipped PCM
+        # value. Existing full-scale voice samples remain untouched.
+        limit = ((32766 - voice_sample) / background_sample if background_sample > 0
+                 else (-32767 - voice_sample) / background_sample)
+        return min(1.0, max(0.0, limit))
+
+    window_frames = max(1, round(voice.format.sample_rate * DUCK_WINDOW_SECONDS))
+    recovery_frames = max(1, round(voice.format.sample_rate * DUCK_RECOVERY_SECONDS))
+    local_scales = [1.0] * len(voice_samples)
+    background_scale = 1.0
+    minimum_scale = 1.0
+    ducked_windows = 0
+    for start in range(0, len(voice_samples), window_frames):
+        end = min(len(voice_samples), start + window_frames)
+        limit = min(
+            safe_background_scale(voice_sample, background_sample)
+            for voice_sample, background_sample in zip(voice_samples[start:end], background_samples[start:end])
+        )
+        if limit < background_scale:
+            background_scale = limit
+        else:
+            background_scale = min(limit, background_scale + ((end - start) / recovery_frames))
+        if background_scale < 0.999999:
+            ducked_windows += 1
+        minimum_scale = min(minimum_scale, background_scale)
+        local_scales[start:end] = [background_scale] * (end - start)
     mixed = bytearray()
     peak = 0
-    for voice_sample, background_sample in zip(voice_samples, background_samples):
-        value = round(voice_sample + background_sample * background_scale)
+    newly_clipped_samples = 0
+    for voice_sample, background_sample, local_scale in zip(voice_samples, background_samples, local_scales):
+        value = round(voice_sample + background_sample * local_scale)
+        if value in {-32768, 32767} and value != voice_sample:
+            newly_clipped_samples += 1
         value = max(-32768, min(32767, value))
         peak = max(peak, abs(value))
         mixed.extend(struct.pack("<h", value))
     result = AudioBuffer(voice.format, bytes(mixed))
     report = {
-        "peak_protection_applied": background_scale < 0.999999,
-        "background_scale": round(background_scale, 9),
-        "background_attenuation_db": round(20 * math.log10(background_scale), 7) if background_scale else None,
+        "peak_protection_applied": minimum_scale < 0.999999,
+        "background_scale": round(minimum_scale, 9),
+        "background_attenuation_db": round(20 * math.log10(minimum_scale), 7) if minimum_scale else None,
         "mixed_peak_sample": peak,
+        "newly_clipped_samples": newly_clipped_samples,
+        "ducking": {
+            "window_ms": round(DUCK_WINDOW_SECONDS * 1000, 3),
+            "recovery_ms": round(DUCK_RECOVERY_SECONDS * 1000, 3),
+            "ducked_windows": ducked_windows,
+        },
     }
     return (result, report) if return_report else result
+
+
+def rms_dbfs(frames: bytes) -> float:
+    """Return mono/stereo 16-bit PCM energy in dBFS, or -inf for silence."""
+    if len(frames) % 2:
+        raise BackgroundMusicError("PCM energy analysis requires 16-bit aligned samples.")
+    values = [sample[0] for sample in struct.iter_unpack("<h", frames)]
+    if not values:
+        return float("-inf")
+    rms = math.sqrt(sum(value * value for value in values) / len(values))
+    return float("-inf") if not rms else 20 * math.log10(rms / 32767.0)
+
+
+def background_quality_gate(
+    voice_track: AudioBuffer, background_track: AudioBuffer, mixed_track: AudioBuffer, timeline: dict[str, Any], peak_protection: dict[str, Any],
+) -> dict[str, Any]:
+    """Reject silent music, an unchanged mix, or clipping introduced by mixing."""
+    if mixed_track.frames == voice_track.frames:
+        raise BackgroundMusicError("Background music mix equals the voice track.")
+    if peak_protection.get("newly_clipped_samples", 0):
+        raise BackgroundMusicError("Background music mix introduced PCM clipping.")
+    frame_width = background_track.format.frame_width
+    levels: dict[str, float] = {}
+    for label, placement in timeline["placements"].items():
+        start = int(placement["start_frame"]) * frame_width
+        end = int(placement["end_frame"]) * frame_width
+        if end <= start:
+            levels[label] = None
+            continue
+        level = rms_dbfs(background_track.frames[start:end])
+        levels[label] = round(level, 4) if math.isfinite(level) else float("-inf")
+        if not math.isfinite(level) or level <= MIN_PLAYED_MUSIC_DBFS:
+            raise BackgroundMusicError(
+                f"Played {label} background music is at or below {MIN_PLAYED_MUSIC_DBFS:.0f} dBFS."
+            )
+    return {
+        "status": "passed",
+        "minimum_played_music_dbfs": MIN_PLAYED_MUSIC_DBFS,
+        "section_rms_dbfs": levels,
+        "mixed_differs_from_voice": True,
+        "newly_clipped_samples": 0,
+    }
 
 
 def build_background_timeline(
@@ -421,6 +501,9 @@ def add_background_music(
     mixed_path = mixed_output_path.resolve() if mixed_output_path is not None else output_dir / "mixed-with-background-music.wav"
     timeline_path = root / f"background-music.{selected_language}.json"
     mixed_track, peak_protection = mix_audio_tracks(voice_track, background_track, return_report=True)
+    quality_gate = background_quality_gate(
+        voice_track, background_track, mixed_track, timeline, peak_protection,
+    )
     applied_gains = {
         label: (round(gain + peak_protection["background_attenuation_db"], 7)
                 if peak_protection["background_attenuation_db"] is not None else None)
@@ -447,6 +530,7 @@ def add_background_music(
         },
         "peak_protection": peak_protection,
         "applied_gains_db": applied_gains,
+        "quality_gate": quality_gate,
     })
     write_json(timeline_path, timeline)
 
@@ -466,6 +550,7 @@ def add_background_music(
         "gains_db": section_gains,
         "applied_gains_db": applied_gains,
         "peak_protection": peak_protection,
+        "quality_gate": quality_gate,
     })
     write_json(production_path, production)
     return {

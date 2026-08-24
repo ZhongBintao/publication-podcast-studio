@@ -1,0 +1,20 @@
+{
+  "name": "economist-podcast-studio",
+  "interface": {
+    "displayName": "Economist Podcast Studio"
+  },
+  "plugins": [
+    {
+      "name": "publication-podcast-studio",
+      "source": {
+        "source": "local",
+        "path": "./plugins/publication-podcast-studio"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Media"
+    }
+  ]
+}

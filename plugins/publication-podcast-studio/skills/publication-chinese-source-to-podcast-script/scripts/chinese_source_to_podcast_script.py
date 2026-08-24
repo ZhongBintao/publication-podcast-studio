@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from decimal import Decimal, InvalidOperation
 import importlib.util
 import json
 import re
@@ -51,6 +53,37 @@ COMMA_WRAPPED_AMOUNT = re.compile(
 )
 TERMINAL_PUNCTUATION = re.compile(r"[。！？.!?][”’'\"）)]*$")
 UNLINKED_WRAPPER_FACT = re.compile(r"(?:\d|[%％$¥￥])")
+NUMBER_LITERAL = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+NUMBER_LITERAL_RE = re.compile(NUMBER_LITERAL)
+ENGLISH_MAGNITUDE_RE = re.compile(
+    rf"(?<![A-Za-z0-9_])(?P<number>{NUMBER_LITERAL})\s*(?P<unit>"
+    r"bn|bln|billion(?:s)?|mn|million(?:s)?|trn|trillion(?:s)?)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+CHINESE_MAGNITUDE_RE = re.compile(
+    rf"(?<![A-Za-z0-9_])(?P<number>{NUMBER_LITERAL})\s*(?P<unit>万亿|亿|万)(?![A-Za-z])"
+)
+PERCENT_RANGE_SUFFIX_RE = re.compile(
+    rf"\s*(?:-|–|—|to|至|到)\s*{NUMBER_LITERAL}\s*[%％]", re.IGNORECASE,
+)
+ENGLISH_MAGNITUDE_FACTORS = {
+    "bn": Decimal("1000000000"),
+    "bln": Decimal("1000000000"),
+    "billion": Decimal("1000000000"),
+    "billions": Decimal("1000000000"),
+    "mn": Decimal("1000000"),
+    "million": Decimal("1000000"),
+    "millions": Decimal("1000000"),
+    "trn": Decimal("1000000000000"),
+    "trillion": Decimal("1000000000000"),
+    "trillions": Decimal("1000000000000"),
+}
+CHINESE_MAGNITUDE_FACTORS = {
+    "万": Decimal("10000"),
+    "亿": Decimal("100000000"),
+    "万亿": Decimal("1000000000000"),
+}
+NUMERIC_LOCALIZATION_POLICY_VERSION = "1.0"
 
 
 CHINESE_STYLE_INSTRUCTIONS = """You are the Chinese writing stage for a source-bounded, two-host publication podcast.
@@ -71,6 +104,7 @@ SOURCE-BOUNDED ORAL ADAPTATION
 
 - Translate meaning rather than English word order. Reorder clauses, split or merge sentences within one source paragraph, and simplify dense written syntax.
 - Preserve every material fact, number, attribution, condition and judgment from the supplied paragraph.
+- Localise English quantity abbreviations and magnitude words into natural Chinese numeric units. Use Arabic digits with Chinese units: for example, 200bn becomes 2000亿, 100 million becomes 1亿, 1.25bn becomes 12.5亿, and 1.5trn becomes 1.5万亿. Preserve the exact value and decimal precision; never round, approximate or convert currencies. Keep any named currency in Chinese as well, for example $200bn becomes 2000亿美元. Never leave numeric m/bn/mn/trn, million, billion or trillion in Chinese spoken text, and never transliterate those English units.
 - Never add a fact, explanation, example, prediction, conclusion, causal link, evaluation, host opinion or unsupported transition.
 - Use light spoken connectors such as “其实”“问题是”“你会发现”“换句话说” only when they add no claim and do not appear mechanically in every segment.
 - Avoid parenthetical notes, comma-wrapped definitions, written noun-plus-explanation fragments, and sentence pieces that are hard to read aloud.
@@ -93,7 +127,7 @@ TERMS AND MIXED ENGLISH
 
 OUTPUT
 
-Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify the opening follows topic hook to listening value to body handoff; the closing follows source-supported payoff to opening callback to natural sign-off; source coverage and order are complete; numbers are preserved; Chinese rhythm and mixed-language readability are natural; and both hosts have substantive work."""
+Every object must contain exactly segment_id, speaker_id, kind, spoken_text and source_paragraph_ids. Use kind opening or closing only in the corresponding wrapper array; use verbatim, sentence_split, reaction or prompt in body. The final spoken_text must be ready for TTS: no SSML, markdown, brackets, dangling punctuation or unsupported host commentary. Keep each factual segment within max_spoken_segment_chars and each captionable sentence within max_caption_unit_chars. Before returning, silently verify the opening follows topic hook to listening value to body handoff; the closing follows source-supported payoff to opening callback to natural sign-off; source coverage and order are complete; numeric values and their precision are preserved while English magnitude units have been localised to Chinese; Chinese rhythm and mixed-language readability are natural; and both hosts have substantive work."""
 
 
 def read_json(path: Path) -> Any:
@@ -113,7 +147,22 @@ def readable_length(value: str) -> int:
     return len(re.sub(r"\s+", "", value))
 
 
+def decimal_value(token: str) -> Decimal:
+    try:
+        return Decimal(token.replace(",", ""))
+    except InvalidOperation as error:
+        raise ValueError(f"Invalid numeric token: {token}") from error
+
+
+def decimal_text(value: Decimal) -> str:
+    result = format(value, "f")
+    if "." in result:
+        result = result.rstrip("0").rstrip(".")
+    return result or "0"
+
+
 def source_number_tokens(value: str) -> list[str]:
+    """Retain the legacy surface-number contract for older completed packages."""
     return re.findall(r"\d+(?:[.,]\d+)?", value)
 
 
@@ -121,17 +170,107 @@ def candidate_number_tokens(value: str) -> set[str]:
     return {token.replace(",", "") for token in source_number_tokens(value)}
 
 
-def number_issues(paragraphs: list[dict[str, Any]], grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, str]]:
+def magnitude_matches(value: str, pattern: re.Pattern[str], factors: dict[str, Decimal]) -> list[tuple[re.Match[str], Decimal]]:
+    matches: list[tuple[re.Match[str], Decimal]] = []
+    for match in pattern.finditer(value):
+        unit = match["unit"].casefold()
+        matches.append((match, decimal_value(match["number"]) * factors[unit]))
+    return matches
+
+
+def position_in_spans(position: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in spans)
+
+
+def percent_number(value: str, start: int, end: int) -> bool:
+    before = value[max(0, start - 3):start]
+    after = value[end:]
+    return (
+        before.endswith("百分之")
+        or bool(re.match(r"\s*[%％]", after))
+        or bool(PERCENT_RANGE_SUFFIX_RE.match(after))
+    )
+
+
+def numeric_facts(value: str, source: bool) -> Counter[tuple[str, str]]:
+    """Return exact quantitative values while recognising language-specific units.
+
+    English source magnitudes and Chinese spoken magnitudes both normalise to
+    their absolute numeric value. The caller additionally requires English
+    magnitudes to be represented with a Chinese magnitude, rather than merely
+    as a long ungrouped number.
+    """
+    if source:
+        matches = magnitude_matches(value, ENGLISH_MAGNITUDE_RE, ENGLISH_MAGNITUDE_FACTORS)
+    else:
+        matches = magnitude_matches(value, CHINESE_MAGNITUDE_RE, CHINESE_MAGNITUDE_FACTORS)
+    facts: Counter[tuple[str, str]] = Counter()
+    spans = [(match.start(), match.end()) for match, _ in matches]
+    for match, total in matches:
+        facts[("number", decimal_text(total))] += 1
+    for match in NUMBER_LITERAL_RE.finditer(value):
+        if position_in_spans(match.start(), spans):
+            continue
+        kind = "percent" if percent_number(value, match.start(), match.end()) else "number"
+        facts[(kind, decimal_text(decimal_value(match.group(0))))] += 1
+    return facts
+
+
+def chinese_magnitude_facts(value: str) -> Counter[str]:
+    return Counter(decimal_text(total) for _, total in magnitude_matches(value, CHINESE_MAGNITUDE_RE, CHINESE_MAGNITUDE_FACTORS))
+
+
+def chinese_localised_value(value: Decimal) -> str:
+    if value >= Decimal("1000000000000"):
+        return f"{decimal_text(value / Decimal('1000000000000'))}万亿"
+    if value >= Decimal("100000000"):
+        return f"{decimal_text(value / Decimal('100000000'))}亿"
+    return f"{decimal_text(value / Decimal('10000'))}万"
+
+
+def number_issues(
+    paragraphs: list[dict[str, Any]], grouped: dict[str, list[dict[str, Any]]], enforce_numeric_localization: bool = True,
+) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     for paragraph in paragraphs:
         source_id = paragraph_id(paragraph)
-        source_numbers = {token.replace(",", "") for token in source_number_tokens(paragraph["text"])}
-        if not source_numbers:
+        source_text = paragraph["text"]
+        spoken_text = " ".join(item["spoken_text"] for item in grouped[source_id])
+        if not enforce_numeric_localization:
+            source_numbers = {token.replace(",", "") for token in source_number_tokens(source_text)}
+            spoken_numbers = candidate_number_tokens(spoken_text)
+            missing = sorted(source_numbers - spoken_numbers)
+            if missing:
+                issues.append({"source_paragraph_id": source_id, "reason": f"missing source number(s): {', '.join(missing)}"})
             continue
-        spoken_numbers = candidate_number_tokens(" ".join(item["spoken_text"] for item in grouped[source_id]))
-        missing = sorted(source_numbers - spoken_numbers)
-        if missing:
-            issues.append({"source_paragraph_id": source_id, "reason": f"missing source number(s): {', '.join(missing)}"})
+        missing_numbers = numeric_facts(source_text, source=True) - numeric_facts(spoken_text, source=False)
+        if missing_numbers:
+            missing = ", ".join(
+                f"{kind}:{value}" for (kind, value), count in sorted(missing_numbers.items()) for _ in range(count)
+            )
+            issues.append({"source_paragraph_id": source_id, "reason": f"missing source number(s): {missing}"})
+
+        source_magnitudes = magnitude_matches(source_text, ENGLISH_MAGNITUDE_RE, ENGLISH_MAGNITUDE_FACTORS)
+        required_localised = Counter(decimal_text(total) for _, total in source_magnitudes)
+        missing_localised = required_localised - chinese_magnitude_facts(spoken_text)
+        if missing_localised:
+            examples = []
+            for match, total in source_magnitudes:
+                normalised = decimal_text(total)
+                if missing_localised[normalised] > 0:
+                    examples.append(f"{match.group(0)} → {chinese_localised_value(total)}")
+                    missing_localised[normalised] -= 1
+            issues.append({
+                "source_paragraph_id": source_id,
+                "reason": "English magnitude values must use Chinese units: " + ", ".join(examples),
+            })
+
+        unlocalised = [match.group(0) for match in ENGLISH_MAGNITUDE_RE.finditer(spoken_text)]
+        if unlocalised:
+            issues.append({
+                "source_paragraph_id": source_id,
+                "reason": "Chinese spoken text must not retain English magnitude expressions: " + ", ".join(unlocalised),
+            })
     return issues
 
 
@@ -310,6 +449,16 @@ def request_payload(
             "translate_when_common": "stable familiar Chinese names and terms",
             "forbid": ["SSML", "pinyin", "bracketed pronunciation", "Chinese-plus-English aliases", "long English clauses"],
         },
+        "numeric_localization_policy": {
+            "rule": "Preserve every exact numeric value, decimal precision, range endpoint and named currency while replacing English magnitude abbreviations and words with Chinese magnitude units.",
+            "examples": [
+                {"source": "200bn", "spoken_zh": "2000亿"},
+                {"source": "100 million", "spoken_zh": "1亿"},
+                {"source": "1.25bn", "spoken_zh": "12.5亿"},
+                {"source": "$200bn", "spoken_zh": "2000亿美元"},
+            ],
+            "forbid": ["numeric m", "bn", "mn", "trn", "million", "billion", "trillion", "transliterated English magnitude units"],
+        },
         "paragraphs": [
             {
                 "source_paragraph_id": paragraph_id(item),
@@ -443,6 +592,7 @@ def split_final_script(script: Any) -> tuple[list[dict[str, Any]], list[dict[str
 
 def finalize_chinese(
     paragraphs: list[dict[str, Any]], candidate: Any, enforce_wrapper_arc: bool = True,
+    enforce_numeric_localization: bool = True,
 ) -> list[dict[str, Any]]:
     opening, body, closing = candidate_sections(candidate)
     if bool(opening) != bool(closing):
@@ -454,7 +604,9 @@ def finalize_chinese(
         closing_issues = wrapper_issues(closing, "closing", paragraphs, enforce_wrapper_arc)
     grouped = grouped_candidate(paragraphs, body)
     validate_sequence(paragraphs, grouped)
-    issues = opening_issues + closing_issues + chinese_lint_issues(paragraphs, grouped) + number_issues(paragraphs, grouped)
+    issues = opening_issues + closing_issues + chinese_lint_issues(paragraphs, grouped) + number_issues(
+        paragraphs, grouped, enforce_numeric_localization,
+    )
     if issues:
         raise ValueError("Chinese writing validation failed: " + json.dumps(issues, ensure_ascii=False))
     result: list[dict[str, Any]] = []
@@ -496,16 +648,35 @@ def validate_final_script(article_path: Path, script_path: Path, production_path
     opening, body, closing = split_final_script(script)
     expected_candidate: Any = script if not opening else {"opening": opening, "body": body, "closing": closing}
     enforce_wrapper_arc = True
+    enforce_numeric_localization = True
     if production_path is not None:
         production = read_json(production_path)
-        policy_version = production.get("script_generation", {}).get("policy_version")
+        script_generation = production.get("script_generation", {})
+        policy_version = script_generation.get("policy_version")
         enforce_wrapper_arc = policy_version == SHARED.SCRIPT_POLICY_VERSION
-    expected = finalize_chinese(paragraphs, expected_candidate, enforce_wrapper_arc=enforce_wrapper_arc)
+        enforce_numeric_localization = (
+            script_generation.get("numeric_localization_policy_version") == NUMERIC_LOCALIZATION_POLICY_VERSION
+        )
+    expected = finalize_chinese(
+        paragraphs, expected_candidate,
+        enforce_wrapper_arc=enforce_wrapper_arc,
+        enforce_numeric_localization=enforce_numeric_localization,
+    )
     if expected != script:
         raise ValueError("The Chinese script is not in canonical finalizer form.")
     characters = sum(len(item["spoken_text"]) for item in script)
     duration = SHARED.validate_duration(script, "zh-CN", SHARED.production_duration_policy(article, production_path))
     return {"status": "valid", "language": "zh-CN", "segments": len(script), "characters": characters, "estimated_seconds": round((characters / 260) * 60, 1), "duration": duration, "source_sha256": article["source_sha256"]}
+
+
+def enforce_numeric_localization_for_production(production_path: Path | None) -> bool:
+    if production_path is None:
+        return True
+    production = read_json(production_path)
+    return (
+        production.get("script_generation", {}).get("numeric_localization_policy_version")
+        == NUMERIC_LOCALIZATION_POLICY_VERSION
+    )
 
 
 def retry_sections(script: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -658,6 +829,9 @@ def init_production(
         article, production, "zh-CN", region, aspect_ratios, None,
         duration_mode, target_minutes, max_minutes, opening_seconds, asset_dwell_target_seconds,
     )
+    payload = read_json(production)
+    payload.setdefault("script_generation", {})["numeric_localization_policy_version"] = NUMERIC_LOCALIZATION_POLICY_VERSION
+    write_json(production, payload)
 
 
 def main() -> int:
@@ -728,7 +902,10 @@ def main() -> int:
             return 0
         elif args.command == "finalize-chinese":
             article, paragraphs = SHARED.load_article(args.article)
-            segments = finalize_chinese(paragraphs, read_json(args.candidate))
+            segments = finalize_chinese(
+                paragraphs, read_json(args.candidate),
+                enforce_numeric_localization=enforce_numeric_localization_for_production(args.production),
+            )
             duration = SHARED.validate_duration(segments, "zh-CN", SHARED.production_duration_policy(article, args.production))
             write_json(args.output, segments)
             result = {"status": "created", "script": str(args.output.resolve()), "segments": len(segments), "duration": duration}

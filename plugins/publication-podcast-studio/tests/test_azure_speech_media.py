@@ -273,6 +273,44 @@ class AzureSpeechMediaTests(unittest.TestCase):
         self.assertNotIn("punctuation.\n", rendered)
         self.assertIn("A cue that already ends.\n", rendered)
 
+    def test_script_cues_use_approved_chinese_punctuation_when_word_events_omit_it(self):
+        text = "第一句。第二句；第三句。"
+        alignment = {"segments": [{
+            "spoken_text": text,
+            "words": [
+                {"text": "第一句", "text_offset": 0, "word_length": 3, "start_seconds": 0.0, "end_seconds": 1.0},
+                {"text": "第二句", "text_offset": 4, "word_length": 3, "start_seconds": 1.1, "end_seconds": 2.0},
+                {"text": "第三句", "text_offset": 8, "word_length": 3, "start_seconds": 2.1, "end_seconds": 3.0},
+            ],
+        }]}
+        cues = MEDIA.script_cues(alignment, "zh-CN")
+        self.assertEqual([cue["text"] for cue in cues], ["第一句。", "第二句；", "第三句。"])
+
+    def test_script_cues_split_a_long_approved_chinese_sentence_without_adding_punctuation(self):
+        text = "这是第一段完整字幕文本，用于测试长句如何在不添加标点的情况下安全拆分。第二段完整字幕文本也必须保持原样。"
+        alignment = {"segments": [{
+            "spoken_text": text,
+            "words": [
+                {"text": "这是第一段完整字幕文本", "text_offset": 0, "word_length": 11, "start_seconds": 0.0, "end_seconds": 1.0},
+                {"text": "用于测试长句如何在不添加标点的情况下安全拆分", "text_offset": 12, "word_length": 22, "start_seconds": 1.1, "end_seconds": 2.0},
+                {"text": "第二段完整字幕文本也必须保持原样", "text_offset": 35, "word_length": 16, "start_seconds": 2.1, "end_seconds": 3.0},
+            ],
+        }]}
+
+        cues = MEDIA.script_cues(alignment, "zh-CN")
+
+        self.assertTrue(all(len(cue["text"]) <= MEDIA.MAX_CHINESE_CHARS for cue in cues))
+        self.assertEqual("".join(cue["text"] for cue in cues), text)
+
+    def test_local_caption_rebuild_supports_chinese_without_synthesis(self):
+        temp, root, production_path = self.make_package("zh-CN")
+        with temp:
+            MEDIA.run_media(production_path, FakeAzureProvider())
+            (root / "captions.zh-CN.srt").unlink()
+            result = MEDIA.rebuild_captions(production_path)
+            self.assertEqual(result["variant"], "zh-CN")
+            self.assertTrue((root / "captions.zh-CN.srt").is_file())
+
     def test_current_bilingual_policy_refuses_machine_phrase_captions_before_provider_use(self):
         temp, _, production_path = self.make_package("en-zh")
         with temp:

@@ -45,6 +45,17 @@ LEGACY_STORYBOARD_FORMAT = "economist-static-slide-storyboard"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
 ARTICLE_ASSET_ROLES = {"article_image", "article_chart"}
+ASSET_KIND_ROLES = {
+    "photo": "article_image",
+    "image": "article_image",
+    "illustration": "article_image",
+    "artwork": "article_image",
+    "chart": "article_chart",
+    "map": "article_chart",
+    "table": "article_chart",
+    "diagram": "article_chart",
+    "infographic": "article_chart",
+}
 CONTENT_IMAGE_TARGET_SECONDS = 20.0
 
 
@@ -182,6 +193,8 @@ def approved_article_assets(source: dict[str, Any], root: Path) -> list[dict[str
     candidates.sort(key=lambda asset: (asset.get("order") if isinstance(asset.get("order"), int) else 10**9, str(asset.get("id", ""))))
     for index, asset in enumerate(candidates, start=1):
         article_role = asset.get("role")
+        if article_role not in ARTICLE_ASSET_ROLES:
+            article_role = ASSET_KIND_ROLES.get(str(asset.get("kind", "")).casefold())
         asset_ref = asset.get("file")
         if article_role not in ARTICLE_ASSET_ROLES or not isinstance(asset_ref, str):
             continue

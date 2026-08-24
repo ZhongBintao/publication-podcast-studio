@@ -78,7 +78,29 @@ class BackgroundMusicTests(unittest.TestCase):
         mixed, report = MODULE.mix_audio_tracks(voice, audio(2, 32000), return_report=True)
         self.assertTrue(report["peak_protection_applied"])
         self.assertLess(report["background_scale"], 1.0)
-        self.assertEqual(samples(mixed), [32767, 32767])
+        self.assertEqual(samples(mixed), [32766, 32766])
+        self.assertEqual(report["newly_clipped_samples"], 0)
+
+    def test_one_full_scale_voice_sample_only_ducks_its_local_music_window(self):
+        voice_values = [0] * 60
+        voice_values[25] = 32767
+        voice = MODULE.AudioBuffer(
+            MODULE.AudioFormat(channels=1, sample_width=2, sample_rate=1000),
+            struct.pack("<" + "h" * len(voice_values), *voice_values),
+        )
+        background = MODULE.AudioBuffer(
+            voice.format,
+            struct.pack("<" + "h" * len(voice_values), *([1000] * len(voice_values))),
+        )
+
+        mixed, report = MODULE.mix_audio_tracks(voice, background, return_report=True)
+
+        self.assertNotEqual(mixed.frames, voice.frames)
+        self.assertEqual(samples(mixed)[25], 32767)
+        self.assertGreater(samples(mixed)[0], 0)
+        self.assertGreater(samples(mixed)[45], 0)
+        self.assertEqual(report["newly_clipped_samples"], 0)
+        self.assertEqual(report["ducking"]["window_ms"], 20.0)
 
     def test_add_background_music_writes_two_tracks_and_production_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -89,9 +111,9 @@ class BackgroundMusicTests(unittest.TestCase):
             opening = root / "opening.wav"
             middle = root / "middle.wav"
             ending = root / "ending.wav"
-            MODULE.write_wav(opening, audio(80, 1))
-            MODULE.write_wav(middle, audio(4, 2))
-            MODULE.write_wav(ending, audio(60, 3))
+            MODULE.write_wav(opening, audio(80, 1000))
+            MODULE.write_wav(middle, audio(4, 2000))
+            MODULE.write_wav(ending, audio(60, 3000))
             production = root / "production.json"
             production.write_text(json.dumps({
                 "variant": "en",

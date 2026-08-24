@@ -106,6 +106,8 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
         self.assertEqual(payload["language"], "zh-CN")
         self.assertIn("Translate and orally adapt", payload["instructions"])
         self.assertIn("OpenAI", payload["mixed_language_policy"]["preserve_examples"])
+        self.assertEqual(payload["numeric_localization_policy"]["examples"][0], {"source": "200bn", "spoken_zh": "2000亿"})
+        self.assertIn("Localise English quantity abbreviations", payload["instructions"])
         self.assertEqual(payload["paragraphs"][0]["max_caption_unit_chars"], 48)
         self.assertNotIn("spoken_text", payload["paragraphs"][0])
         self.assertEqual(payload["framing"]["opening"]["kind"], "opening")
@@ -131,6 +133,78 @@ class ChineseSourceToPodcastScriptTests(unittest.TestCase):
         candidate[2]["spoken_text"] = "Anthropic 报告说，测试之后发生了变化。"
         with self.assertRaisesRegex(ValueError, "missing source number"):
             MODULE.finalize_chinese(self.paragraphs, candidate)
+
+    def test_finalize_accepts_exact_chinese_magnitude_localisation(self):
+        paragraphs = [{
+            "order": 1,
+            "text": "Investment reached $200bn, serving 100 million people and using 1.25bn components.",
+        }]
+        candidate = [{
+            "segment_id": "draft-1",
+            "speaker_id": "primary",
+            "kind": "verbatim",
+            "spoken_text": "投资额达到2000亿美元，覆盖1亿人，并使用12.5亿个零部件。",
+            "source_paragraph_ids": ["p001"],
+        }]
+        result = MODULE.finalize_chinese(paragraphs, candidate)
+        self.assertEqual(result[0]["spoken_text"], candidate[0]["spoken_text"])
+
+    def test_finalize_rejects_english_magnitude_or_changed_precision(self):
+        paragraphs = [{"order": 1, "text": "Investment reached $1.25bn."}]
+        copied = [{
+            "segment_id": "draft-1",
+            "speaker_id": "primary",
+            "kind": "verbatim",
+            "spoken_text": "投资额达到1.25bn美元。",
+            "source_paragraph_ids": ["p001"],
+        }]
+        with self.assertRaisesRegex(ValueError, "English magnitude values must use Chinese units"):
+            MODULE.finalize_chinese(paragraphs, copied)
+
+        rounded = [dict(copied[0], spoken_text="投资额达到13亿美元。")]
+        with self.assertRaisesRegex(ValueError, "missing source number"):
+            MODULE.finalize_chinese(paragraphs, rounded)
+
+    def test_legacy_package_remains_valid_before_numeric_localization_policy(self):
+        article = {
+            "review_status": "verified",
+            "source_sha256": "legacy-numeric-source-hash",
+            "article": {"headline": "Legacy numeric article"},
+            "paragraphs": [{"order": 1, "text": "Investment reached $200bn."}],
+        }
+        candidate = [{
+            "segment_id": "draft-1",
+            "speaker_id": "primary",
+            "kind": "verbatim",
+            "spoken_text": "投资额达到200bn美元。",
+            "source_paragraph_ids": ["p001"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            script_path = root / "script.zh-CN.json"
+            production_path = root / "production.json"
+            article_path.write_text(json.dumps(article, ensure_ascii=False), encoding="utf-8")
+            script_path.write_text(json.dumps(
+                MODULE.finalize_chinese(article["paragraphs"], candidate, enforce_numeric_localization=False),
+                ensure_ascii=False,
+            ), encoding="utf-8")
+            production_path.write_text(json.dumps({"script_generation": {"policy_version": "5.3"}}), encoding="utf-8")
+            result = MODULE.validate_final_script(article_path, script_path, production_path)
+            self.assertEqual(result["status"], "valid")
+
+    def test_new_chinese_production_freezes_numeric_localization_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            article_path = root / "article.json"
+            production_path = root / "production.json"
+            article_path.write_text(json.dumps(self.article, ensure_ascii=False), encoding="utf-8")
+            MODULE.init_production(article_path, production_path, "region", ["9:16"])
+            production = json.loads(production_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                production["script_generation"]["numeric_localization_policy_version"],
+                MODULE.NUMERIC_LOCALIZATION_POLICY_VERSION,
+            )
 
     def test_finalize_places_opening_and_closing_around_body(self):
         result = MODULE.finalize_chinese(self.paragraphs, self.framed_candidate())

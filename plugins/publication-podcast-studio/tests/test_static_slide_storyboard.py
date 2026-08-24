@@ -150,6 +150,31 @@ class StaticSlideStoryboardTests(unittest.TestCase):
             self.assertNotIn("number", content["guide_questions"][0])
             self.assertNotIn("number", content["guide_questions"][1])
 
+    def test_extraction_kind_media_is_accepted_when_legacy_role_is_absent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            Image.new("RGB", (667, 938), "#29616c").save(root / "assets" / "article.png")
+            Image.new("RGB", (900, 500), "#d1aa38").save(root / "assets" / "map.png")
+            article_path = root / "article.json"
+            article = json.loads(article_path.read_text(encoding="utf-8"))
+            article["assets"] = [
+                {"id": "photo", "order": 1, "kind": "photo", "file": "assets/article.png"},
+                {"id": "map", "order": 2, "kind": "map", "file": "assets/map.png"},
+            ]
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+
+            storyboard = MODULE.build_storyboard(production, questions, root / "storyboard.json", 1.0)
+
+            self.assertEqual(
+                [slide["asset"]["file"] for slide in storyboard["slides"][1:]],
+                ["assets/article.png", "assets/map.png"],
+            )
+            self.assertEqual(
+                [slide["asset"]["article_role"] for slide in storyboard["slides"][1:]],
+                ["article_image", "article_chart"],
+            )
+
     def test_opening_asset_cannot_be_replaced_by_an_article_image(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

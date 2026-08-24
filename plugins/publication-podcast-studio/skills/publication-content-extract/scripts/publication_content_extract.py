@@ -773,9 +773,14 @@ def finalize(args: argparse.Namespace) -> int:
             target = target.with_suffix(".png")
             crop_region(Path(request["source_pdf"]), asset, target)
             name = str(Path(name).with_suffix(".png"))
+        kind = str(asset.get("kind", "")).casefold()
+        role = asset.get("role") if asset.get("role") in {"article_image", "article_chart"} else (
+            "article_chart" if kind in {"chart", "map", "table", "diagram", "infographic"} else "article_image"
+        )
         assets.append({
             **asset,
             "content_unit_id": asset.get("content_unit_id") or "item-001",
+            "role": role,
             "file": name,
             "extraction_method": method,
         })
