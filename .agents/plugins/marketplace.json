@@ -1,7 +1,7 @@
 {
-  "name": "economist-podcast-studio",
+  "name": "publication-podcast-studio",
   "interface": {
-    "displayName": "Economist Podcast Studio"
+    "displayName": "Publication Podcast Studio"
   },
   "plugins": [
     {

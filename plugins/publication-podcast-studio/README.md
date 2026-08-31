@@ -3,7 +3,7 @@
 Repository-local Codex plugin for turning an English-language magazine or
 newspaper PDF into a source-linked bilingual podcast-video package.
 
-Version 1.1 supports two source modes:
+Version 1.3 supports two source modes:
 
 - `article`: one user-selected article from any publication;
 - `short_issue`: every editorial item in a small issue, ordered lead first and
@@ -20,6 +20,14 @@ packages are normalised in memory and are not rewritten.
 New English and Chinese scripts use a source-anchored opening and closing arc
 with one wrapper-only repair attempt. Existing policy-5.2 production packages
 remain readable and are not rewritten.
+
+After a confirmed video matrix succeeds, the workflow creates the compact
+`release/video-publish-package/` folder containing the publish copy, selected
+release covers and finished videos. It verifies independent file copies before
+atomically promoting the folder, then performs bounded `safe` cleanup of only
+selected media-stage caches. The JSON report and the chat result include a
+clickable absolute link to the package. Legacy `--variant` runs keep the old
+output behavior and skip automatic cleanup unless explicitly finalized.
 
 ## Version policy
 

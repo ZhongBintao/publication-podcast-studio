@@ -3,6 +3,17 @@
 All notable changes to this plugin are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 1.3.0 - 2026-08-31
+
+- Added a confirmed-run finalisation stage that atomically builds an
+  independently copied `release/video-publish-package/` containing publish
+  copy, selected covers and finished videos.
+- Added SHA-256/size verification, a retryable `finalize` command and a
+  clickable absolute package link in the workflow report and JSON result.
+- Added bounded `safe` cleanup for selected media-stage caches and abandoned
+  staging directories while preserving canonical outputs and shared work.
+- Registered publish-copy and release-cover artifacts in `production.json`.
+
 ## 1.2.0 - 2026-08-24
 
 - Localised English magnitude numbers in Chinese spoken scripts while
