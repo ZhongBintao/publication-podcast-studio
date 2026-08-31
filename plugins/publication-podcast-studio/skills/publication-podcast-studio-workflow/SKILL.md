@@ -49,3 +49,34 @@ The workflow writes `workflow-report.json`, preserves per-product/per-ratio
 paths and hashes, and reuses unchanged outputs. `production.json` remains the
 only run configuration and state file. Historical single-article packages are
 read through the compatibility normalizer rather than rewritten.
+
+When the confirmed product interface is used, successful rendering is followed
+by an atomic, independently copied release package at
+`release/video-publish-package/`:
+
+```text
+release/video-publish-package/
+├── publish-copy.md
+├── covers/cover-9x16.png
+├── covers/cover-16x9.png
+├── videos/<product>/<voice-profile>/9x16.mp4
+├── videos/<product>/<voice-profile>/16x9.mp4
+└── package.json
+```
+
+The package contains only publishing copy, selected covers and finished
+videos. After its hashes and sizes are verified, the default `safe` cleanup
+removes only selected variants' owned Azure media-stage cache and abandoned
+release-package staging directories. Shared external temporary work and
+canonical video outputs remain intact. Use `--cleanup-policy none` to skip
+cleanup, or retry packaging without rerendering:
+
+```bash
+"$RUNTIME_PY" skills/publication-podcast-studio-workflow/scripts/publication_podcast_studio_workflow.py finalize \
+  output/publications/PACKAGE --cleanup-policy safe
+```
+
+The successful confirmed run adds an absolute Markdown `chat_link` to both
+the JSON result and `workflow-report.json`, so the chat can reply with a
+directly clickable folder link. No link is emitted for a blocked or failed
+render.

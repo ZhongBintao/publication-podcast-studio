@@ -103,6 +103,14 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             "output": {"aspect_ratios": ["16:9"]},
             "artifacts": artifacts,
         }), encoding="utf-8")
+        cover_dir = root / "release" / "covers"
+        cover_dir.mkdir(parents=True)
+        for ratio in ("16x9", "9x16"):
+            Image.new("RGB", (64, 64), "#ffd400").save(cover_dir / f"cover-{ratio}.png")
+        (root / "publish-copy.md").write_text(
+            "# 发布素材\n\n竖屏：release/covers/cover-9x16.png\n横屏：release/covers/cover-16x9.png\n",
+            encoding="utf-8",
+        )
 
     def test_local_only_reuses_media_and_renders_vertical_output(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -150,6 +158,63 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             production = json.loads((root / "production.json").read_text())
             self.assertEqual(production["workflow"]["request"]["products"], ["en-zh", "en", "zh-CN"])
             self.assertEqual(set(production["workflow"]["storyboards"]), {"en-zh", "en", "zh-CN"})
+            package = root / "release" / "video-publish-package"
+            self.assertTrue((package / "publish-copy.md").is_file())
+            self.assertEqual(
+                sorted(path.relative_to(package).as_posix() for path in package.rglob("*") if path.is_file()),
+                [
+                    "covers/cover-16x9.png", "covers/cover-9x16.png", "package.json", "publish-copy.md",
+                    "videos/en-zh/default/16x9.mp4", "videos/en-zh/default/9x16.mp4",
+                    "videos/en/default/16x9.mp4", "videos/en/default/9x16.mp4",
+                    "videos/zh-CN/default/16x9.mp4", "videos/zh-CN/default/9x16.mp4",
+                ],
+            )
+            self.assertNotIn("release/covers/", (package / "publish-copy.md").read_text(encoding="utf-8"))
+            self.assertEqual(report["cleanup"]["policy"], "safe")
+            self.assertIn("[打开视频发布包]", report["chat_link"])
+
+    def test_confirmed_release_cleanup_removes_only_selected_media_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            selected = root / ".work" / "azure-speech-media" / "en-zh"
+            unrelated = root / ".work" / "voice-ab"
+            selected.mkdir(parents=True)
+            unrelated.mkdir(parents=True)
+            (selected / "segments.wav").write_bytes(b"cache")
+            (unrelated / "keep.txt").write_text("keep", encoding="utf-8")
+            report = MODULE.run_workflow(
+                root, None, ["9:16"], "default", True, 1.0,
+                products=["en-zh"], confirmed=True,
+            )
+            self.assertFalse(selected.exists())
+            self.assertTrue(unrelated.exists())
+            self.assertEqual(report["cleanup"]["removed_count"], 1)
+            publish_copy = (root / "release" / "video-publish-package" / "publish-copy.md").read_text(encoding="utf-8")
+            self.assertIn("cover-9x16.png", publish_copy)
+            self.assertNotIn("cover-16x9.png", publish_copy)
+
+    def test_legacy_variant_does_not_create_release_package_or_clean_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            cache = root / ".work" / "azure-speech-media" / "en-zh"
+            cache.mkdir(parents=True)
+            (cache / "keep.txt").write_text("keep", encoding="utf-8")
+            MODULE.run_workflow(root, "en-zh", ["9:16"], "default", True, 1.0)
+            self.assertFalse((root / "release" / "video-publish-package").exists())
+            self.assertTrue(cache.exists())
+
+    def test_finalize_command_contract_can_retry_package_without_rerendering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_package(root)
+            first = MODULE.run_workflow(root, "en-zh", ["9:16"], "default", True, 1.0)
+            self.assertEqual(first["release_package"]["state"], "skipped")
+            report = MODULE.finalize_existing_workflow(root, "none")
+            self.assertTrue((root / "release" / "video-publish-package" / "videos" / "en-zh" / "default" / "9x16.mp4").is_file())
+            self.assertEqual(report["cleanup"]["policy"], "none")
+            self.assertIn("[打开视频发布包]", report["chat_link"])
 
     def test_unconfirmed_product_matrix_has_no_side_effect(self):
         with tempfile.TemporaryDirectory() as temporary:
