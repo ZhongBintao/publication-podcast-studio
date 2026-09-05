@@ -213,6 +213,8 @@ def approved_article_assets(source: dict[str, Any], root: Path) -> list[dict[str
             "file": asset_file,
             "content_unit_id": asset.get("content_unit_id"),
             "source_paragraph_ids": list(dict.fromkeys(source_ids)),
+            **({"caption": asset["caption"].strip()} if isinstance(asset.get("caption"), str) and asset["caption"].strip() else {}),
+            **({"credit": asset["credit"].strip()} if isinstance(asset.get("credit"), str) and asset["credit"].strip() else {}),
         })
     return approved
 
@@ -498,8 +500,21 @@ def display_content(
         display = next((item for item in storyboard.get("content_unit_display", []) if item.get("content_unit_id") == unit_id), {})
     byline = metadata.get("byline") or ""
     dateline = metadata.get("dateline") or ""
-    publication_mark = publication_display_name(source["publication"])
-    byline_dateline_issue = " · ".join(value for value in (publication_mark, byline, dateline) if value)
+    publication = source.get("publication", {})
+    publication_mark = str(publication.get("name") or publication_display_name(publication)).strip()
+    issue_mark = str(publication.get("issue_date") or publication.get("issue_number") or "").strip()
+    metadata_parts = [value for value in (publication_mark, issue_mark, byline, dateline) if isinstance(value, str) and value.strip()]
+    # Keep the historical compatibility field in the publication's preferred
+    # display language; the v3 metadata layer consumes the source-name based
+    # metadata_parts list above.
+    legacy_publication_mark = publication_display_name(publication)
+    legacy_parts = [value for value in (legacy_publication_mark, byline, dateline) if isinstance(value, str) and value.strip()]
+    byline_dateline_issue = " · ".join(legacy_parts)
+    asset = (slide or {}).get("asset", {})
+    caption = asset.get("caption") if isinstance(asset, dict) else None
+    credit = asset.get("credit") if isinstance(asset, dict) else None
+    source_caption_parts = [value.strip() for value in (caption, credit) if isinstance(value, str) and value.strip()]
+    image_caption = " · ".join(dict.fromkeys(source_caption_parts))
     return {
         "article": {
             "kicker": metadata.get("kicker") or metadata.get("section") or "",
@@ -507,7 +522,11 @@ def display_content(
             "headline_zh": display.get("headline_zh", ""),
             "subtitle": metadata.get("subtitle") or "",
             "subtitle_zh": display.get("subtitle_zh", ""),
+            "metadata_parts": metadata_parts,
             "byline_dateline_issue": byline_dateline_issue,
+            "image_caption": image_caption,
+            "content_asset": asset if isinstance(asset, dict) else {},
+            "issue_cover": {"file": source.get("front_page", {}).get("file", "")},
         },
         "guide_questions": storyboard["guide_questions"],
         "caption": {"current": {"en": caption_en, "zh": caption_zh}},
@@ -571,6 +590,13 @@ def validate_layout_diagnostics(items: list[dict[str, Any]]) -> None:
     for item in items:
         occupied: list[tuple[str, list[int]]] = []
         for layer in item.get("caption_layout", []):
+            # Image diagnostics describe the actual contained-image rectangle
+            # and its shadows; they are not text boxes and must not participate
+            # in the text collision gate.
+            if layer.get("kind", "text") != "text":
+                continue
+            if "safe_bbox" not in layer or "line_bboxes" not in layer:
+                raise StoryboardError(f"{layer.get('layer', 'text')} has incomplete layout diagnostics.")
             x, y, width, height = layer["safe_bbox"]
             if layer["layer"] == "caption_zh" and any(line.startswith(tuple("，。！？；：、）》】〉〕〗」』")) for line in layer.get("lines", [])):
                 raise StoryboardError("A Chinese caption visual line begins with attached punctuation.")
@@ -668,10 +694,11 @@ def render_storyboard(
             caption_en, caption_zh = caption_fields(cue, variant, subtitle_mode)
             cover = package_path(root, slide["asset"]["file"], f"asset for {slide['id']}")
             caption_layout: list[dict[str, Any]] = []
-            render_role = "opening" if slide["template_role"] == "issue_item" else slide["template_role"]
+            render_role = slide["template_role"]
+            template_name = template_names.get(render_role) or template_names["opening"]
             frame = render_template(
                 definition,
-                template_names[render_role],
+                template_name,
                 cover,
                 display_content(article, storyboard, caption_en, caption_zh, slide),
                 1080 if aspect_ratio == "16:9" else 1920,
@@ -681,7 +708,7 @@ def render_storyboard(
             )
             render_diagnostics.append({
                 "start_seconds": round(start, 7), "end_seconds": round(end, 7),
-                "slide_id": slide["id"], "asset": slide["asset"], "caption_layout": caption_layout,
+                "slide_id": slide["id"], "template_role": slide["template_role"], "template": template_name, "asset": slide["asset"], "caption_layout": caption_layout,
             })
             frame_path = temporary_path / f"frame-{index:05d}.png"
             frame.save(frame_path)
@@ -699,9 +726,13 @@ def render_storyboard(
         subprocess.run(command, check=True, capture_output=True, text=True)
     report_path = destination.parent / "render-report.json"
     write_json(report_path, {
-        "schema_version": "1.0", "variant": variant, "aspect_ratio": aspect_ratio, "subtitle_mode": subtitle_mode,
+        "schema_version": "1.1", "variant": variant, "aspect_ratio": aspect_ratio, "subtitle_mode": subtitle_mode,
         "visible_caption_languages": ["en"] if subtitle_mode == "en-only" else (["zh"] if variant == "zh-CN" else ["en", "zh"]),
         "caption_source": "structured" if structured_cues_path else "legacy_srt",
+        "template_definition": definition.get("name"),
+        "template_definition_sha256": sha256_file(TEMPLATE_PATH),
+        "renderer": "preview_visual_system.py",
+        "geometry_gate": "hard_text_boxes_and_contained_image_rectangles",
         "asset_sha256": storyboard_asset_hashes(storyboard, root),
         "image_frame": definition.get("design_tokens", {}).get("image_frame", {}),
         "frames": render_diagnostics,

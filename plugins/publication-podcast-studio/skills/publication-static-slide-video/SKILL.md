@@ -29,6 +29,20 @@ RUNTIME_PY=/Users/zhongbintao/.cache/codex-runtimes/codex-primary-runtime/depend
   production.json storyboard.json --aspect-ratio 9:16
 ```
 
+## Editorial Modern visual contract
+
+The default template is the supplied Editorial Modern system. It uses a warm
+cream page, deep ink, red accents, Georgia/Helvetica/Noto Sans SC typography,
+contained source imagery with two soft shadows and transparent white caption
+overlays with a dark outline. The stable JSON filename remains
+`podcast-video-visual-system.v1.json`, while its internal schema is `3.1.0`.
+
+Opening metadata is built from verified publication name, issue date (or issue
+number), byline and dateline in that order; missing fields are omitted. No read
+time or synthetic source line is generated. Content image captions are limited
+to the source asset's verified `caption`/`credit` fields. Short-issue items use
+the same visual language and never borrow another unit's media.
+
 ## Collision-safe typography
 
 The renderer does not trust independent fixed title boxes. It loads the real
@@ -37,10 +51,12 @@ opening metadata, and flows title/Chinese title/standfirst/byline through one
 shared safe region. Guide questions are solved inside their own measured safe
 regions. Captions use the same font-aware adaptive layout.
 
-Every generated frame records actual glyph boxes. A local geometry gate rejects
-out-of-bounds text or any intersection between different text layers before
-ffmpeg runs. This is part of the first render pass and uses no model tokens.
-Text is never truncated or repaired after video generation.
+Every generated frame records actual glyph boxes, image rectangles and shadow
+parameters. A local geometry gate rejects out-of-bounds text or any
+intersection between different text layers before ffmpeg runs. This is part of
+the first render pass and uses no model tokens. Text is never truncated,
+ellipsized or repaired after video generation; an unfit minimum size fails the
+run explicitly.
 
 Outputs remain addressable at
 `video/<variant>/<voice-profile>/<aspect-ratio-with-x>/final.mp4` (or the

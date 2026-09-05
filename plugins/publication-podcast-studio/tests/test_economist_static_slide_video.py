@@ -40,10 +40,8 @@ class EconomistStaticSlideVideoTests(unittest.TestCase):
             portrait = MODULE.render_editorial_frame(article, "9:16", "English caption.", "中文字幕。")
             self.assertEqual(landscape.size, (1920, 1080))
             self.assertEqual(portrait.size, (1080, 1920))
-            self.assertEqual(landscape.getpixel((10, 900)), (38, 38, 38))
-            self.assertEqual(portrait.getpixel((10, 1700)), (38, 38, 38))
-            self.assertEqual(landscape.getpixel((1110, 45)), (255, 255, 255))
-            self.assertEqual(portrait.getpixel((173, 80)), (255, 255, 255))
+            self.assertEqual(landscape.getpixel((10, 900)), (244, 241, 236))
+            self.assertEqual(portrait.getpixel((10, 1700)), (244, 241, 236))
 
     def test_english_only_frame_renders_both_aspect_ratios_without_chinese_caption(self):
         with tempfile.TemporaryDirectory() as temporary:

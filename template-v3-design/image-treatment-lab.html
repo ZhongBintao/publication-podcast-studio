@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图片处理效果对比样板 · Image Treatment Lab</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-page: #E8E4DE;
+    --bg-frame: #F4F1EC;
+    --ink: #161616;
+    --muted: #8A8580;
+    --econ-red: #E3120B;
+  }
+
+  body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg-page);
+    color: var(--ink);
+    padding: 48px 32px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page-header {
+    max-width: 1400px;
+    margin: 0 auto 40px;
+  }
+  .page-header .label {
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--econ-red);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .page-header h1 {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 32px;
+    font-weight: 400;
+    line-height: 1.2;
+    margin-bottom: 10px;
+  }
+  .page-header p {
+    font-size: 14px;
+    color: #555;
+    line-height: 1.6;
+    max-width: 720px;
+  }
+
+  .section-title {
+    max-width: 1400px;
+    margin: 48px auto 20px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .section-title .num {
+    font-family: Georgia, serif;
+    font-size: 13px;
+    color: var(--econ-red);
+    font-weight: 700;
+  }
+  .section-title h2 {
+    font-family: Georgia, serif;
+    font-size: 20px;
+    font-weight: 400;
+  }
+  .section-title .desc {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .grid {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 28px 24px;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card .card-label {
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding-left: 2px;
+    line-height: 1.4;
+  }
+  .card .card-label strong {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  .stage {
+    position: relative;
+    background: var(--bg-frame);
+    border-radius: 3px;
+    overflow: hidden;
+    aspect-ratio: 4 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .stage.portrait-img {
+    aspect-ratio: 3 / 4;
+  }
+
+  .stage img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  /* ===== 效果 0: 原图 ===== */
+  .fx-none img {
+    /* no treatment */
+  }
+
+  /* ===== 效果 1: 白边 + 硬边偏移阴影 ===== */
+  .fx-sticker img {
+    border: 5px solid #FFFFFF;
+    box-shadow: 5px 5px 0 rgba(0,0,0,0.22);
+    border-radius: 1px;
+  }
+
+  /* ===== 效果 2: 白边 + 柔和模糊阴影 ===== */
+  .fx-soft img {
+    border: 5px solid #FFFFFF;
+    border-radius: 1px;
+    box-shadow:
+      0 2px 4px rgba(0,0,0,0.08),
+      0 12px 28px rgba(0,0,0,0.18),
+      0 24px 48px rgba(0,0,0,0.10);
+  }
+
+  /* ===== 效果 3: 降饱和 ===== */
+  .fx-desat img {
+    filter: saturate(0.75);
+  }
+
+  /* ===== 效果 4: 降饱和 + 白边 + 硬边阴影 ===== */
+  .fx-combo-base img {
+    filter: saturate(0.75);
+    border: 5px solid #FFFFFF;
+    box-shadow: 5px 5px 0 rgba(0,0,0,0.22);
+    border-radius: 1px;
+  }
+
+  /* ===== 效果 5: 底部渐变过渡 ===== */
+  .fx-fade {
+    padding-bottom: 0;
+  }
+  .fx-fade img {
+    max-height: 88%;
+  }
+  .fx-fade::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 50px;
+    background: linear-gradient(to bottom, transparent, var(--bg-frame));
+    pointer-events: none;
+  }
+
+  /* ===== 效果 6: 胶片颗粒 ===== */
+  .fx-grain img {
+    filter: saturate(0.85);
+  }
+  .fx-grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.08'/%3E%3C/svg%3E");
+    pointer-events: none;
+    mix-blend-mode: overlay;
+  }
+
+  /* ===== 效果 7: 暗角 ===== */
+  .fx-vignette {
+    padding: 0;
+  }
+  .fx-vignette img {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .fx-vignette::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.35) 100%);
+    pointer-events: none;
+  }
+
+  /* ===== 效果 8: 完整推荐组合 ===== */
+  .fx-full {
+    padding-bottom: 0;
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-top: 20px;
+  }
+  .fx-full .img-wrap {
+    position: relative;
+    max-width: 85%;
+    max-height: 72%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .fx-full .img-wrap img {
+    filter: saturate(0.75);
+    border: 5px solid #FFFFFF;
+    box-shadow: 5px 5px 0 rgba(0,0,0,0.22);
+    border-radius: 1px;
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .fx-full .img-caption {
+    font-family: Georgia, serif;
+    font-size: 11px;
+    font-style: italic;
+    color: var(--muted);
+    margin-top: 14px;
+    text-align: center;
+  }
+  .fx-full::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 40px;
+    background: linear-gradient(to bottom, transparent, var(--bg-frame));
+    pointer-events: none;
+  }
+
+  /* ===== 效果 9: 无边框纯阴影 ===== */
+  .fx-shadow-only img {
+    box-shadow:
+      0 4px 8px rgba(0,0,0,0.1),
+      0 16px 36px rgba(0,0,0,0.20);
+    border-radius: 1px;
+  }
+
+  /* ===== 效果 10: 细黑边 + 白边（画廊装裱） ===== */
+  .fx-gallery img {
+    border: 2px solid #1A1A1A;
+    outline: 5px solid #FFFFFF;
+    outline-offset: -7px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  }
+
+  /* 推荐标记 */
+  .recommend-badge {
+    display: inline-block;
+    background: var(--econ-red);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .notes {
+    max-width: 1400px;
+    margin: 56px auto 0;
+    background: #fff;
+    border-radius: 6px;
+    padding: 32px 36px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  .notes h3 {
+    font-family: Georgia, serif;
+    font-size: 18px;
+    font-weight: 400;
+    margin-bottom: 16px;
+  }
+  .notes ul {
+    list-style: none;
+    padding: 0;
+  }
+  .notes li {
+    font-size: 13px;
+    color: #444;
+    line-height: 1.7;
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .notes li::before {
+    content: '—';
+    position: absolute;
+    left: 0;
+    color: var(--econ-red);
+    font-weight: 700;
+  }
+  .notes li strong {
+    color: var(--ink);
+  }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div class="label">Image Treatment Lab · 图片处理效果对比</div>
+  <h1>10 种图片处理方案，直观对比选择</h1>
+  <p>以下所有效果均用同两张示例图（封面人像 + 文章插画）展示，CSS 模拟最终渲染效果。每种效果标注了实现难度和适用场景，最终代码模板将采用你选定的方案。</p>
+</div>
+
+<!-- ===== 第一组：文章插画（横版） ===== -->
+<div class="section-title">
+  <span class="num">A</span>
+  <h2>文章配图 · 横版插画</h2>
+  <span class="desc">示例：金币项链插画</span>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <div class="card-label"><strong>00 · 原图</strong><br>无任何处理</div>
+    <div class="stage fx-none">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="original">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>01 · 白边 + 硬边偏移阴影</strong><br>贴纸悬浮感 · 实现极简</div>
+    <div class="stage fx-sticker">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="sticker">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>02 · 白边 + 柔和模糊阴影</strong><br>传统悬浮感 · 阴影需模糊计算</div>
+    <div class="stage fx-soft">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="soft shadow">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>03 · 降饱和 25%</strong><br>色彩克制 · 统一色调</div>
+    <div class="stage fx-desat">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="desaturated">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>04 · 降饱和 + 白边 + 硬边阴影</strong><br>推荐组合基础版</div>
+    <div class="stage fx-combo-base">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="combo base">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>05 · 底部渐变过渡</strong><br>图片渐隐入背景 · 消除硬边界</div>
+    <div class="stage fx-fade">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="fade bottom">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>06 · 胶片颗粒叠加</strong><br>纸质感 · 噪点覆盖</div>
+    <div class="stage fx-grain">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="grain">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>07 · 暗角</strong><br>中心突出 · 摄影感</div>
+    <div class="stage fx-vignette">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="vignette">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>08 · 无边框纯阴影</strong><br>极简悬浮 · 无白边</div>
+    <div class="stage fx-shadow-only">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="shadow only">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>09 · 画廊装裱（细黑边+白边）</strong><br>美术馆相框感</div>
+    <div class="stage fx-gallery">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="gallery frame">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>10 · 完整推荐组合</strong> <span class="recommend-badge">推荐</span><br>降饱和+白边+硬边阴影+底部渐变+图注</div>
+    <div class="stage fx-full">
+      <div class="img-wrap">
+        <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/01-article-illustration.jpg" alt="full combo">
+      </div>
+      <div class="img-caption">Illustration: The Economist</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ===== 第二组：封面人像（竖版） ===== -->
+<div class="section-title">
+  <span class="num">B</span>
+  <h2>期刊封面 · 竖版人像照片</h2>
+  <span class="desc">示例：马斯克封面 · 测试照片类素材表现</span>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <div class="card-label"><strong>00 · 原图</strong></div>
+    <div class="stage fx-none portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="original">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>01 · 白边 + 硬边偏移阴影</strong></div>
+    <div class="stage fx-sticker portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="sticker">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>02 · 白边 + 柔和模糊阴影</strong></div>
+    <div class="stage fx-soft portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="soft">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>03 · 降饱和 25%</strong></div>
+    <div class="stage fx-desat portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="desat">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>04 · 降饱和 + 白边 + 硬边阴影</strong></div>
+    <div class="stage fx-combo-base portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="combo">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>05 · 底部渐变过渡</strong></div>
+    <div class="stage fx-fade portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="fade">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>06 · 胶片颗粒</strong></div>
+    <div class="stage fx-grain portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="grain">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>07 · 暗角</strong></div>
+    <div class="stage fx-vignette portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="vignette">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>08 · 无边框纯阴影</strong></div>
+    <div class="stage fx-shadow-only portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="shadow only">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>09 · 画廊装裱</strong></div>
+    <div class="stage fx-gallery portrait-img">
+      <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="gallery">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label"><strong>10 · 完整推荐组合</strong> <span class="recommend-badge">推荐</span></div>
+    <div class="stage fx-full portrait-img">
+      <div class="img-wrap">
+        <img src="output/articles/2026-07-25-print-the-rise-of-the-deserving-rich/assets/issue-cover.png" alt="full">
+      </div>
+      <div class="img-caption">The Economist · July 25 – Aug 7, 2026</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ===== 说明 ===== -->
+<div class="notes">
+  <h3>实现难度与说明</h3>
+  <ul>
+    <li><strong>01 硬边偏移阴影</strong>：Python PIL 中画一个偏移矩形即可，3 行代码，零模糊计算，性能最好。</li>
+    <li><strong>02 柔和模糊阴影</strong>：需要手动生成高斯模糊层，约 15 行代码，每帧渲染增加约 50ms。</li>
+    <li><strong>03 降饱和</strong>：`ImageEnhance.Color(image).enhance(0.75)`，1 行代码，预处理阶段执行一次即可。</li>
+    <li><strong>05 底部渐变</strong>：生成一个线性渐变 PNG 贴在图片底部，5 行代码。</li>
+    <li><strong>06 胶片颗粒</strong>：生成随机噪点数组叠加，约 10 行代码，可全局一次生成复用。</li>
+    <li><strong>07 暗角</strong>：生成径向渐变遮罩，约 12 行代码，适合照片类，不适合图表。</li>
+    <li><strong>09 画廊装裱</strong>：双层边框（黑边+白边），4 行代码，美术馆风格。</li>
+    <li><strong>10 完整组合</strong>：03+01+05+图注，预处理降饱和加白边 → 渲染时画硬边阴影+渐变+图注，总计约 20 行代码。</li>
+  </ul>
+</div>
+
+</body>
+</html>

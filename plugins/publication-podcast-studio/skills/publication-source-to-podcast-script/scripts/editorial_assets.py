@@ -646,6 +646,21 @@ def register_production(production_path: Path, assets_path: Path) -> None:
         raise EditorialAssetsError("editorial-assets.json must remain in the production package.") from error
     production.setdefault("artifacts", {})["editorial_assets"] = relative
     production.setdefault("artifact_hashes", {})["editorial_assets"] = sha256_file(assets_path)
+    publish_copy_path = (assets_path.parent / "publish-copy.md").resolve()
+    if publish_copy_path.is_file():
+        production["artifacts"]["publish_copy"] = str(publish_copy_path.relative_to(root))
+        production.setdefault("artifact_hashes", {})["publish_copy"] = sha256_file(publish_copy_path)
+    assets = read_json(assets_path)
+    for ratio, output in assets.get("cover_art", {}).get("outputs", {}).items():
+        reference = output.get("path") if isinstance(output, dict) else None
+        if not isinstance(reference, str):
+            continue
+        cover_path = (root / reference).resolve()
+        if not cover_path.is_file():
+            continue
+        key = f"cover_{ratio.replace(':', 'x')}"
+        production["artifacts"][key] = str(cover_path.relative_to(root))
+        production.setdefault("artifact_hashes", {})[key] = sha256_file(cover_path)
     write_json(production_path, production)
 
 

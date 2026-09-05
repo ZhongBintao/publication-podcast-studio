@@ -20,14 +20,21 @@ from typing import Any
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_SCRIPT = SCRIPT_ROOT / "publication-static-slide-video" / "scripts" / "static_slide_storyboard.py"
+RELEASE_SCRIPT = Path(__file__).resolve().parent
 if str(STATIC_SCRIPT.parent) not in sys.path:
     sys.path.insert(0, str(STATIC_SCRIPT.parent))
+if str(RELEASE_SCRIPT) not in sys.path:
+    sys.path.insert(0, str(RELEASE_SCRIPT))
 
 import static_slide_storyboard as storyboard  # type: ignore  # noqa: E402
+from release_package import (  # type: ignore  # noqa: E402
+    ReleasePackageError,
+    finalize_release_package,
+)
 
 
 WORKFLOW_NAME = "publication-podcast-studio-workflow"
-WORKFLOW_VERSION = "1.1.0"
+WORKFLOW_VERSION = "1.2.0"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_ASPECT_RATIOS = {"16:9", "9:16"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
@@ -255,6 +262,7 @@ def run_workflow(
     products: list[str] | None = None,
     confirmed: bool = False,
     asset_dwell_target: float | None = None,
+    cleanup_policy: str | None = None,
 ) -> dict[str, Any]:
     started_at = utc_now()
     root = package_root(package)
@@ -268,6 +276,10 @@ def run_workflow(
         plans = [product_plan(selected_variant)]
     if confirmed_matrix and not confirmed:
         raise WorkflowBlocked("The confirmed production request is required before video generation can start.")
+    if cleanup_policy is None:
+        cleanup_policy = "safe" if confirmed_matrix and confirmed else "none"
+    if cleanup_policy not in {"safe", "none"}:
+        raise WorkflowError("cleanup_policy must be 'safe' or 'none'.")
     if production.get("content_mode") == "short_issue" and production.get("workflow", {}).get("request", {}).get("confirmation_status") != "confirmed" and not confirmed:
         raise WorkflowBlocked("short_issue mode requires one confirmed, frozen production request before generation starts.")
     if not ratios:
@@ -342,7 +354,7 @@ def run_workflow(
     })
     write_json(production_path, production)
     report = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "workflow": WORKFLOW_NAME,
         "workflow_version": WORKFLOW_VERSION,
         "state": "complete",
@@ -366,8 +378,66 @@ def run_workflow(
         "outputs": rendered,
         "limitations": [],
     }
+    should_finalize = confirmed_matrix and confirmed
+    if should_finalize:
+        try:
+            release_package, cleanup = finalize_release_package(root, production, report, cleanup_policy)
+        except (OSError, ValueError, ReleasePackageError) as error:
+            production = read_json(production_path)
+            production.setdefault("workflow", {}).update({
+                "state": "failed",
+                "release_package": {"state": "failed", "error": str(error)},
+                "cleanup": {"policy": cleanup_policy, "state": "skipped", "reason": "release_package_failed"},
+                "updated_at": utc_now(),
+            })
+            write_json(production_path, production)
+            raise WorkflowError(f"release-package: {error}") from error
+        report["release_package"] = release_package
+        report["cleanup"] = cleanup
+        report["chat_link"] = f"[打开视频发布包](<{release_package['absolute_path']}>)"
+        if cleanup.get("state") != "complete":
+            report["limitations"].append("安全清理未完全完成；视频发布包已生成并可打开。")
+        production = read_json(production_path)
+        production.setdefault("workflow", {}).update({
+            "release_package": release_package,
+            "cleanup": cleanup,
+            "updated_at": utc_now(),
+        })
+    else:
+        report["release_package"] = {"state": "skipped", "reason": "legacy_or_unconfirmed_interface"}
+        report["cleanup"] = {"policy": cleanup_policy, "state": "skipped", "removed_count": 0, "reclaimed_bytes": 0}
     write_json(root / "workflow-report.json", report)
+    write_json(production_path, production)
     report["report"] = str((root / "workflow-report.json").relative_to(root))
+    return report
+
+
+def finalize_existing_workflow(package: Path, cleanup_policy: str = "safe") -> dict[str, Any]:
+    """Create or retry the release package for an already completed run."""
+    root = package_root(package)
+    production_path = root / "production.json"
+    report_path = root / "workflow-report.json"
+    production = read_json(production_path)
+    if not report_path.is_file():
+        raise WorkflowError("workflow-report.json is missing; run the video workflow before finalizing.")
+    report = read_json(report_path)
+    try:
+        release_package, cleanup = finalize_release_package(root, production, report, cleanup_policy)
+    except (OSError, ValueError, ReleasePackageError) as error:
+        raise WorkflowError(f"release-package: {error}") from error
+    report["schema_version"] = "1.1.0"
+    report["workflow_version"] = WORKFLOW_VERSION
+    report["release_package"] = release_package
+    report["cleanup"] = cleanup
+    report["chat_link"] = f"[打开视频发布包](<{release_package['absolute_path']}>)"
+    production.setdefault("workflow", {}).update({
+        "release_package": release_package,
+        "cleanup": cleanup,
+        "updated_at": utc_now(),
+    })
+    write_json(production_path, production)
+    write_json(report_path, report)
+    report["report"] = str(report_path.relative_to(root))
     return report
 
 
@@ -387,7 +457,7 @@ def write_blocked_report(
         return None
     report_path = root / "workflow-report.json"
     write_json(report_path, {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "workflow": WORKFLOW_NAME,
         "workflow_version": WORKFLOW_VERSION,
         "state": "blocked" if isinstance(error, WorkflowBlocked) else "failed",
@@ -418,6 +488,10 @@ def main() -> int:
     run.add_argument("--asset-dwell-target", type=float, default=None, help="Compatibility override; must match frozen video_timing when present.")
     run.add_argument("--local-only", action="store_true", default=False, help="Never call an external provider; reuse existing media or stop with a report.")
     run.add_argument("--confirmed", action="store_true", help="Assert that the Codex conversation has confirmed the frozen production request.")
+    run.add_argument("--cleanup-policy", choices=("safe", "none"), default=None, help="Finalize confirmed product runs with safe cleanup, or skip cleanup.")
+    finalize = commands.add_parser("finalize", help="Build or retry the video publish package for a completed run.")
+    finalize.add_argument("package", type=Path)
+    finalize.add_argument("--cleanup-policy", choices=("safe", "none"), default="safe")
     args = parser.parse_args()
     if args.command == "run":
         try:
@@ -426,6 +500,7 @@ def main() -> int:
                 args.local_only, args.opening_duration,
                 asset_dwell_target=args.asset_dwell_target,
                 subtitle_mode=args.subtitle_mode, products=args.products, confirmed=args.confirmed,
+                cleanup_policy=args.cleanup_policy,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
@@ -439,6 +514,14 @@ def main() -> int:
                 payload["report"] = str(report_path)
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 3 if isinstance(error, WorkflowBlocked) else 2
+    if args.command == "finalize":
+        try:
+            result = finalize_existing_workflow(args.package, args.cleanup_policy)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, WorkflowError) as error:
+            print(json.dumps({"state": "failed", "error": str(error)}, ensure_ascii=False, indent=2))
+            return 2
     return 2
 
 

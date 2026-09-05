@@ -1,9 +1,14 @@
-# Publication Video Visual System v3
+# Publication Video Visual System v3 · Editorial Modern
 
-The visual system is restrained, publication-neutral and source-led. It uses a
-dark `#262626` field, white text, a red kicker accent and contained source
-images with a 3 px white frame. It never crops, stretches or generates source
-imagery.
+The canonical visual follows the supplied Editorial Modern prototype: a warm
+cream `#F4F1EC` page, deep ink `#161616`, red `#E3120B`, Georgia display type,
+Helvetica utility type and Noto Sans SC for Chinese. It never crops, stretches
+or generates source imagery. Source images use contain placement with a 1 px
+radius and two soft shadows; there is no white border or dark image slot.
+
+Portrait images fade into the paper panel with a vertical gradient. Content
+image captions display only verified asset `caption`/`credit` text; empty
+source fields produce no placeholder.
 
 The underlying typography route is constraint-based rather than a collection
 of independent fixed title boxes:
@@ -18,7 +23,8 @@ No text is truncated. No model performs visual QA. Both ratios use the same
 layout rules, and the bottom 10% of portrait remains reserved for platform
 details.
 
-Article content slides show the two approved guide questions. Short-issue
-content slides reuse the opener layout with the current item's metadata, so the
-listener always sees the item being spoken. Captions never overlay source
-imagery.
+Article content slides show the two approved guide questions with fixed red
+`01` and `02` markers. Short-issue content slides use the same visual language
+and opener treatment with the current item's metadata and unit-owned media.
+Captions are transparent overlays with white text, a dark outline and a soft
+shadow.

@@ -175,6 +175,31 @@ class StaticSlideStoryboardTests(unittest.TestCase):
                 ["article_image", "article_chart"],
             )
 
+    def test_editorial_modern_metadata_and_source_caption_are_dynamic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            production, questions = self.make_package(root)
+            article_path = root / "article.json"
+            article = json.loads(article_path.read_text(encoding="utf-8"))
+            article["publication"] = {
+                "name": "Daily Paper", "display_name": "日报", "kind": "newspaper",
+                "issue_date": "2026-09-05", "issue_number": "99",
+            }
+            article["article"].update({"byline": "Jane Roe", "dateline": "LONDON"})
+            article["assets"] = [{
+                "id": "source-photo", "order": 1, "role": "article_image",
+                "file": "assets/issue-cover.png", "caption": "Verified caption", "credit": "Photo desk",
+            }]
+            article_path.write_text(json.dumps(article), encoding="utf-8")
+            storyboard = MODULE.build_storyboard(production, questions, root / "storyboard.json")
+            self.assertEqual(storyboard["slides"][1]["asset"]["caption"], "Verified caption")
+            self.assertEqual(storyboard["slides"][1]["asset"]["credit"], "Photo desk")
+            source = MODULE.resolve_article(json.loads(production.read_text()), root)[1]
+            content = MODULE.display_content(source, storyboard, "", "", storyboard["slides"][1])
+            self.assertEqual(content["article"]["metadata_parts"], ["Daily Paper", "2026-09-05", "Jane Roe", "LONDON"])
+            self.assertEqual(content["article"]["image_caption"], "Verified caption · Photo desk")
+            self.assertNotIn("MIN READ", json.dumps(content, ensure_ascii=False))
+
     def test_opening_asset_cannot_be_replaced_by_an_article_image(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

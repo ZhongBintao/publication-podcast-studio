@@ -14,18 +14,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class VisualSystemPreviewTests(unittest.TestCase):
-    def test_image_border_wraps_the_contained_image_not_the_letterbox_slot(self):
+    def test_image_shadow_wraps_the_contained_image_not_the_letterbox_slot(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "square.png"
             Image.new("RGB", (100, 100), "#A61919").save(source)
-            canvas = Image.new("RGB", (300, 120), "#000000")
+            canvas = Image.new("RGB", (300, 120), "#F4F1EC")
             MODULE.draw_image(canvas, {
                 "bbox": [0, 0, 300, 120],
                 "fit": "contain",
-                "style": {"stroke": "solid", "border_color": "#FFFFFF", "border_width_output_px": 3},
+                "style": {"stroke": "none", "shadows": []},
             }, source, 1.0)
-            self.assertEqual(canvas.getpixel((89, 0)), (38, 38, 38))
-            self.assertEqual(canvas.getpixel((90, 0)), (255, 255, 255))
+            self.assertEqual(canvas.getpixel((89, 0)), (244, 241, 236))
+            self.assertEqual(canvas.getpixel((90, 10)), (166, 25, 25))
             self.assertEqual(canvas.getpixel((94, 4)), (166, 25, 25))
 
     def test_extracted_definition_renders_all_four_states(self):
@@ -45,8 +45,8 @@ class VisualSystemPreviewTests(unittest.TestCase):
             with Image.open(outputs["01-landscape-opening"]) as landscape, Image.open(outputs["03-portrait-opening"]) as portrait:
                 self.assertEqual(landscape.size, (1920, 1080))
                 self.assertEqual(portrait.size, (1080, 1920))
-                self.assertEqual(landscape.getpixel((10, 10)), (38, 38, 38))
-                self.assertEqual(portrait.getpixel((10, 10)), (38, 38, 38))
+                self.assertEqual(landscape.getpixel((10, 10)), (244, 241, 236))
+                self.assertEqual(portrait.getpixel((10, 10)), (244, 241, 236))
 
     def test_adaptive_captions_wrap_without_a_two_line_cap_in_landscape_and_portrait(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -96,10 +96,10 @@ class VisualSystemPreviewTests(unittest.TestCase):
                     self.assertAlmostEqual(line_x + line_width / 2, x + width / 2, delta=2)
                 if item["layer"] == "caption_zh":
                     self.assertIn("Noto Sans SC", item["font"])
-                    self.assertEqual(item["font_weight"], "medium")
+                    self.assertEqual(item["font_weight"], "bold")
                     self.assertTrue(all(not line.startswith(tuple("，。！？；：、）》】〉〕〗」』")) for line in item["lines"]))
                 else:
-                    self.assertEqual(item["font"], "Arial Bold/bold")
+                    self.assertEqual(item["font"], "Helvetica/bold")
                     self.assertEqual(item["font_weight"], "bold")
 
     def test_english_only_mode_hides_chinese_caption_layer_in_all_template_states(self):
@@ -126,7 +126,7 @@ class VisualSystemPreviewTests(unittest.TestCase):
                 x, _, safe_width, _ = english["safe_bbox"]
                 for line_x, _, line_width, _ in english["line_bboxes"]:
                     self.assertAlmostEqual(line_x + line_width / 2, x + safe_width / 2, delta=2)
-                self.assertEqual(english["font"], "Arial Bold/bold")
+                self.assertEqual(english["font"], "Helvetica/bold")
 
                 layers = MODULE.caption_layers_for_frame(
                     __import__("PIL.ImageDraw", fromlist=["ImageDraw"]).Draw(Image.new("RGB", (width, height))),
@@ -217,7 +217,7 @@ class VisualSystemPreviewTests(unittest.TestCase):
     def test_portrait_opening_metadata_flows_without_overlapping_the_caption_card(self):
         definition = MODULE.read_definition(MODULE.DEFAULT_DEFINITION)
         template = definition["templates"]["portrait_opening"]
-        canvas = Image.new("RGB", (1080, 1920), "#262626")
+        canvas = Image.new("RGB", (1080, 1920), "#F4F1EC")
         content = {
             **MODULE.SAMPLE_CONTENT,
             "article": {
@@ -236,7 +236,7 @@ class VisualSystemPreviewTests(unittest.TestCase):
             content,
             1920 / 720,
         )
-        metadata_ids = ("headline", "headline_zh", "subtitle", "subtitle_zh", "byline_dateline")
+        metadata_ids = ("headline", "headline_zh", "subtitle", "subtitle_zh", "metadata")
         for previous, current in zip(metadata_ids, metadata_ids[1:]):
             previous_box = layers[previous]["bbox"]
             current_box = layers[current]["bbox"]

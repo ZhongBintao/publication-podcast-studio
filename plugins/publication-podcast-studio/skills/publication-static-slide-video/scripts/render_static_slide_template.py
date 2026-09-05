@@ -13,19 +13,25 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import preview_visual_system as visual
+
 
 CANVASES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
 SUBTITLE_MODES = {"default", "en-only"}
-PAPER = "#262626"
-LANDSCAPE_PAPER = "#262626"
-INK = "#FFFFFF"
-RED = "#E3121A"
+PAPER = "#F4F1EC"
+LANDSCAPE_PAPER = "#F4F1EC"
+INK = "#161616"
+RED = "#E3120B"
 CAPTION = "#FFFFFF"
 SERIF_FONTS = (
     "/System/Library/Fonts/Supplemental/Baskerville.ttc",
@@ -229,22 +235,24 @@ def draw_caption_lines(canvas: Image.Image, x: int, y: int, width: int, lines: l
 
 def place_media(canvas: Image.Image, image_path: Path, box: tuple[int, int, int, int], fit: str) -> None:
     x, y, width, height = box
-    frame = Image.new("RGB", (width, height), "#262626")
-    with Image.open(image_path) as source:
-        image = source.convert("RGB")
-        scale = (max if fit == "crop" else min)(width / image.width, height / image.height)
-        resized = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
-        if fit == "crop":
-            offset = ((resized.width - width) // 2, (resized.height - height) // 2)
-            frame.paste(resized.crop((offset[0], offset[1], offset[0] + width, offset[1] + height)))
-        else:
-            frame.paste(resized, ((width - resized.width) // 2, (height - resized.height) // 2))
-    shadow = Image.new("RGBA", (width + 32, height + 32), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rectangle((16, 16, width + 15, height + 15), fill=(23, 23, 22, 64))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(14))
-    canvas.paste(shadow, (x - 16, y - 16), shadow)
-    canvas.paste(frame, (x, y))
-    ImageDraw.Draw(canvas).rectangle((x, y, x + width - 1, y + height - 1), outline="#FFFFFF", width=3)
+    visual.draw_image(
+        canvas,
+        {
+            "id": "legacy-media",
+            "bbox": [x, y, width, height],
+            "fit": fit,
+            "style": {
+                "stroke": "none",
+                "corner_radius_px": 1,
+                "shadows": [
+                    {"offset_x_px": 0, "offset_y_px": 4, "blur_px": 10, "color": "#000000", "opacity": 0.10},
+                    {"offset_x_px": 0, "offset_y_px": 18, "blur_px": 40, "color": "#000000", "opacity": 0.22},
+                ],
+            },
+        },
+        image_path,
+        1.0,
+    )
 
 
 def issue_media_path(article_path: Path, article: dict[str, Any], override: str | None) -> Path:
@@ -342,74 +350,41 @@ def render_editorial_frame(
     if not article.get("headline"):
         raise TemplateError("article.json needs article.headline.")
     image_path = issue_media_path(article_path, package, image_override)
-    canvas = Image.new("RGB", CANVASES[aspect_ratio], LANDSCAPE_PAPER if aspect_ratio == "16:9" else PAPER)
-    draw = ImageDraw.Draw(canvas)
-    # Vertical and horizontal source images are always contained. The template
-    # may leave letterboxing, but it must never crop or distort verified art.
-    fit = "contain"
-    kicker = (article.get("kicker") or article.get("section") or "").upper()
-    subtitle = article.get("subtitle") or ""
-    attribution = metadata_line(article)
-
-    if aspect_ratio == "16:9":
-        rail_y, rail_height = 856, 224
-        place_media(canvas, image_path, (1110, 45, 595, 795), fit)
-        kicker_font = font(SANS_FONTS, 21)
-        draw.text((116, 127), kicker, font=kicker_font, fill=RED)
-        title_font, title_lines = fitted_text(draw, article["headline"], SERIF_FONTS, 78, 54, 820, 3)
-        title_bottom = draw_lines(draw, (116, 240), title_lines, title_font, INK, 12)
-        subtitle_font, subtitle_lines = fitted_text(draw, subtitle, SANS_FONTS, 31, 24, 750, 3)
-        subtitle_y = max(445, title_bottom + 80)
-        subtitle_bottom = draw_lines(draw, (116, subtitle_y), subtitle_lines, subtitle_font, INK, 10)
-        if attribution:
-            draw.text((116, max(585, subtitle_bottom + 45)), attribution, font=font(SANS_FONTS, 24), fill=INK)
-        caption_x, caption_y, caption_width = 140, 900, 1620
-        en_max = zh_max = 32
-    else:
-        # The formal portrait template is a compact free-flow stack. The last
-        # 10% of the frame is intentionally left empty for platform details;
-        # captions end above that boundary and never enter it.
-        place_media(canvas, image_path, (140, 80, 800, 480), fit)
-        kicker_font = font(SANS_FONTS, 21)
-        draw.text((42, 615), kicker, font=kicker_font, fill=RED)
-        title_font, title_lines = fitted_text(draw, article["headline"], SERIF_FONTS, 62, 42, 960, 3)
-        title_bottom = draw_lines(draw, (42, 665), title_lines, title_font, INK, 10)
-        subtitle_font, subtitle_lines = fitted_text(draw, subtitle, SANS_FONTS, 27, 20, 940, 2)
-        subtitle_bottom = draw_lines(draw, (42, max(885, title_bottom + 35)), subtitle_lines, subtitle_font, INK, 7)
-        if attribution and subtitle_bottom < 1240:
-            draw.text((42, min(1240, subtitle_bottom + 24)), attribution, font=font(SANS_FONTS, 19), fill=INK)
-        caption_x, caption_y, caption_width = 54, 1415, 972
-        en_max, zh_max = 30, 28
-
-    if subtitle_mode == "en-only":
-        en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
-        en_height = glyph_height(draw, en_font)
-        en_gap = max(0, round(en_height * 0.05))
-        total_height = en_height * len(en_lines) + en_gap * max(0, len(en_lines) - 1)
-        if aspect_ratio == "16:9":
-            caption_y = rail_y + max(0, (rail_height - total_height) // 2) - 6
-            draw_caption_lines(canvas, caption_x, caption_y, caption_width, en_lines, en_font, en_gap)
-        else:
-            portrait_rail_y, portrait_rail_height = 1402, 288
-            caption_y = portrait_rail_y + max(0, (portrait_rail_height - total_height) // 2)
-            draw_lines(draw, (caption_x, caption_y), en_lines, en_font, CAPTION, en_gap)
-    elif aspect_ratio == "16:9":
-        en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
-        zh_font, zh_lines = fitted_text(draw, caption_zh, NOTO_SANS_SC_FONTS, zh_max, 18, caption_width, 2, weight="medium", allow_truncation=False, balance=True)
-        en_height = glyph_height(draw, en_font)
-        zh_height = glyph_height(draw, zh_font)
-        en_gap = max(0, round(en_height * 0.05))
-        zh_gap = max(0, round(zh_height * 0.05))
-        draw_caption_lines(canvas, caption_x, caption_y, caption_width, en_lines, en_font, en_gap)
-        draw_caption_lines(canvas, caption_x, caption_y + round((en_height + en_gap) * len(en_lines)) + 6, caption_width, zh_lines, zh_font, zh_gap)
-    else:
-        en_font, en_lines = fitted_text(draw, caption_en, ARIAL_BOLD_FONTS, en_max, 18, caption_width, 2, weight="bold", allow_truncation=False, balance=True)
-        zh_font, zh_lines = fitted_text(draw, caption_zh, NOTO_SANS_SC_FONTS, zh_max, 18, caption_width, 2, weight="medium", allow_truncation=False, balance=True)
-        en_gap = max(0, round(glyph_height(draw, en_font) * 0.05))
-        zh_gap = max(0, round(glyph_height(draw, zh_font) * 0.05))
-        next_y = draw_lines(draw, (caption_x, caption_y), en_lines, en_font, CAPTION, en_gap)
-        draw_lines(draw, (caption_x, next_y + 6), zh_lines, zh_font, CAPTION, zh_gap)
-    return canvas
+    definition = visual.read_definition(visual.DEFAULT_DEFINITION)
+    template_name = definition["template_selection"][aspect_ratio]["opening"]
+    publication = package.get("publication", {}) if isinstance(package.get("publication"), dict) else {}
+    metadata_parts = [
+        value.strip() for value in (
+            publication.get("name"), publication.get("issue_date") or publication.get("issue_number"),
+            article.get("byline"), article.get("dateline"),
+        ) if isinstance(value, str) and value.strip()
+    ]
+    content = {
+        "article": {
+            "kicker": (article.get("kicker") or article.get("section") or "").strip(),
+            "headline": str(article.get("headline") or ""),
+            "headline_zh": str(article.get("headline_zh") or ""),
+            "subtitle": str(article.get("subtitle") or ""),
+            "subtitle_zh": str(article.get("subtitle_zh") or ""),
+            "metadata_parts": metadata_parts,
+            "byline_dateline_issue": " · ".join(metadata_parts),
+            "image_caption": "",
+            "issue_cover": {"file": str(image_path)},
+            "content_asset": {"file": str(image_path), "role": media_role},
+        },
+        "guide_questions": [
+            {"question": "", "translation_zh": ""},
+            {"question": "", "translation_zh": ""},
+        ],
+        "caption": {"current": {"en": caption_en, "zh": caption_zh}},
+    }
+    try:
+        return visual.render_template(
+            definition, template_name, image_path, content,
+            CANVASES[aspect_ratio][1], CANVASES[aspect_ratio][0], None, subtitle_mode,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise TemplateError(str(error)) from error
 
 
 def concat_manifest(path: Path, frames: list[tuple[Path, float]]) -> None:
