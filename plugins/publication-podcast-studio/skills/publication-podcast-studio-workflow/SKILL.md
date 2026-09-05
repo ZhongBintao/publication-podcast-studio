@@ -16,7 +16,10 @@ Before production, run the extraction preflight and confirm one frozen request:
 - aspect ratios: `9:16` and/or `16:9`;
 - duration: target plus hard cap, or `coverage_unbounded`;
 - video timing: 8-second opening and 20-second asset dwell by default;
-- title, description and matching release covers.
+- title, description and matching release covers. Release covers are generated
+  after rendering by extracting the first frame of the corresponding finished
+  video and compositing the approved editorial cover-text overlay; they do not
+  use a separate dark background renderer.
 
 Do not ask for item-by-item approval in short-issue mode. Lead selection,
 episode order, complete paragraph coverage and layout safety are automated
@@ -65,7 +68,9 @@ release/video-publish-package/
 ```
 
 The package contains only publishing copy, selected covers and finished
-videos. After its hashes and sizes are verified, the default `safe` cleanup
+videos. Each cover's `source_video`, `frame_time_seconds` and overlay geometry
+are recorded in the workflow report. After its hashes and sizes are verified,
+the default `safe` cleanup
 removes only selected variants' owned Azure media-stage cache and abandoned
 release-package staging directories. Shared external temporary work and
 canonical video outputs remain intact. Use `--cleanup-policy none` to skip

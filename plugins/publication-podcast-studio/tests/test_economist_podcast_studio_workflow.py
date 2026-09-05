@@ -37,6 +37,13 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
                 {"question": "Who funds the future when markets and technology change?", "translation_zh": "当市场和技术变化时，谁在为未来融资？", "source_paragraph_ids": ["p001"]},
                 {"question": "Can markets adapt to a world shaped by new technology?", "translation_zh": "市场能适应新技术塑造的世界吗？", "source_paragraph_ids": ["p001"]},
             ],
+            "cover_art": {
+                "text_lines": [
+                    {"position": "top", "text": "未来谁买单"},
+                    {"position": "middle", "text": "资本正在改写规则"},
+                    {"position": "bottom", "text": "市场能否跟上"},
+                ],
+            },
         }), encoding="utf-8")
         artifacts = {
             "script_en": "script.en.json",
@@ -172,6 +179,14 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             self.assertNotIn("release/covers/", (package / "publish-copy.md").read_text(encoding="utf-8"))
             self.assertEqual(report["cleanup"]["policy"], "safe")
             self.assertIn("[打开视频发布包]", report["chat_link"])
+            cover_generation = report["release_package"]["cover_generation"]
+            self.assertEqual(cover_generation["9:16"]["source_kind"], "finished_video_frame")
+            self.assertEqual(cover_generation["9:16"]["frame_time_seconds"], 0.0)
+            self.assertEqual(cover_generation["9:16"]["source_video"], "video/en-zh/default/9x16/final.mp4")
+            self.assertEqual(len(cover_generation["9:16"]["source_video_sha256"]), 64)
+            self.assertTrue(cover_generation["9:16"]["overlay"]["enabled"])
+            with Image.open(root / "release" / "covers" / "cover-9x16.png") as cover:
+                self.assertNotEqual(cover.getpixel((0, 0)), (255, 212, 0))
 
     def test_confirmed_release_cleanup_removes_only_selected_media_cache(self):
         with tempfile.TemporaryDirectory() as temporary:

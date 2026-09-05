@@ -609,6 +609,8 @@ def render_cover(article: dict[str, Any], root: Path, payload: dict[str, Any], a
         "sha256": sha256_file(destination),
         "dimensions": {"width": image.width, "height": image.height},
         "template": f"release_cover_{'landscape' if aspect_ratio == '16:9' else 'portrait'}",
+        "source_kind": "provisional_source_cover",
+        "note": "Replaced by a finished-video frame cover during confirmed workflow finalisation.",
         "base_template": "landscape_opening" if aspect_ratio == "16:9" else "portrait_opening",
         "font_family": font_family,
         "font_path": font_path,

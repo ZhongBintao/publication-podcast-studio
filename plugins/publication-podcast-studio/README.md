@@ -24,11 +24,15 @@ remain readable and are not rewritten.
 
 After a confirmed video matrix succeeds, the workflow creates the compact
 `release/video-publish-package/` folder containing the publish copy, selected
-release covers and finished videos. It verifies independent file copies before
-atomically promoting the folder, then performs bounded `safe` cleanup of only
-selected media-stage caches. The JSON report and the chat result include a
-clickable absolute link to the package. Legacy `--variant` runs keep the old
-output behavior and skip automatic cleanup unless explicitly finalized.
+release covers and finished videos. Each release cover is taken from the first
+frame of the corresponding finished video and then receives the editorial
+cover-text overlay, so its background is exactly the selected Editorial Modern
+video frame rather than a second hand-built dark canvas. It verifies
+independent file copies before atomically promoting the folder, then performs
+bounded `safe` cleanup of only selected media-stage caches. The JSON report and
+the chat result include a clickable absolute link to the package. Legacy
+`--variant` runs keep the old output behavior and skip automatic cleanup unless
+explicitly finalized.
 
 ## Version policy
 

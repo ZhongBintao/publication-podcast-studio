@@ -3,6 +3,14 @@
 All notable changes to this plugin are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 1.4.1 - 2026-09-05
+
+- Changed confirmed release-cover generation to extract the opening frame from
+  the finished video and composite the existing editorial cover text as one
+  transparent overlay layer.
+- Recorded the source video, frame timestamp and overlay geometry in the
+  release report and refreshed canonical cover artifact hashes.
+
 ## 1.4.0 - 2026-09-05
 
 - Replaced the default static-slide template with the supplied Editorial Modern

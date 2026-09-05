@@ -5,7 +5,9 @@ The release package is deliberately a copy of canonical outputs.  A later
 rerender can therefore never mutate a package that has already been shared in
 the chat.  Cleanup only removes directories owned by the selected media stage
 and abandoned package staging directories; it never scans the whole package
-for files that merely look temporary.
+for files that merely look temporary. Release covers are materialised from the
+finished video frame immediately before packaging, then receive one editorial
+text overlay layer.
 """
 
 from __future__ import annotations
@@ -15,14 +17,26 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageFont
+
 
 PACKAGE_RELATIVE_PATH = Path("release") / "video-publish-package"
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
+VIDEO_FRAME_COVER_SECONDS = 0.0
+VIDEO_FRAME_COVER_FONT_PATHS = (
+    "/Library/Fonts/Microsoft YaHei Bold.ttf",
+    "/Library/Fonts/Microsoft YaHei.ttf",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+)
 
 
 class ReleasePackageError(ValueError):
@@ -72,6 +86,231 @@ def _source_file(root: Path, value: Any, label: str) -> Path:
 def _safe_component(value: Any, fallback: str) -> str:
     component = _SAFE_COMPONENT.sub("_", str(value or "")).strip("._")
     return component or fallback
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _video_for_ratio(root: Path, rendered: list[dict[str, Any]], ratio: str) -> Path:
+    """Choose one finished video frame source for a cover deterministically."""
+    priority = {"en-zh": 0, "en": 1, "zh-CN": 2}
+    candidates: list[tuple[int, int, Path]] = []
+    for index, item in enumerate(rendered):
+        if not isinstance(item, dict) or str(item.get("aspect_ratio", "")) != ratio:
+            continue
+        path = item.get("path")
+        if not isinstance(path, str):
+            continue
+        product = str(item.get("product", ""))
+        candidates.append((priority.get(product, 99), index, _source_file(root, path, f"video output for cover {ratio}")))
+    if not candidates:
+        raise ReleasePackageError(f"No finished video output is available for cover {ratio}.")
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def _cover_font(size: int) -> tuple[ImageFont.FreeTypeFont, str, str]:
+    for candidate in VIDEO_FRAME_COVER_FONT_PATHS:
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            face = ImageFont.truetype(str(path), size)
+            return face, path.stem, str(path)
+        except OSError:
+            continue
+    return ImageFont.load_default(), "Pillow default", ""
+
+
+def _overlay_lines(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        position = str(item.get("position", "")).strip()
+        if text and position in {"top", "middle", "bottom"}:
+            result.append({"position": position, "text": text})
+    return result
+
+
+def _fit_overlay_face(draw: ImageDraw.ImageDraw, text: str, width: int, maximum: int, minimum: int) -> ImageFont.FreeTypeFont:
+    for size in range(maximum, minimum - 1, -2):
+        face, _family, _path = _cover_font(size)
+        left, _top, right, _bottom = draw.textbbox((0, 0), text, font=face, stroke_width=max(2, round(size * 0.055)))
+        if right - left <= width:
+            return face
+    face, _family, _path = _cover_font(minimum)
+    return face
+
+
+def _overlay_cover_text(frame: Image.Image, lines: list[dict[str, str]], aspect_ratio: str) -> dict[str, Any]:
+    """Composite the existing editorial cover copy as one transparent text layer."""
+    if not lines:
+        return {"enabled": False, "lines": [], "bbox": None, "font_path": ""}
+    width, height = frame.size
+    if aspect_ratio == "16:9":
+        # Keep the overlay in the image/text side of the opening frame. The
+        # background itself is the extracted frame; no replacement panel is
+        # painted behind it.
+        region = (round(width * 0.56), round(height * 0.18), round(width * 0.37), round(height * 0.48))
+        maximum, minimum = round(height * 0.085), max(22, round(height * 0.035))
+    else:
+        region = (round(width * 0.08), round(height * 0.12), round(width * 0.84), round(height * 0.42))
+        maximum, minimum = round(width * 0.11), max(22, round(width * 0.045))
+    x, y, region_width, region_height = region
+    overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    gap = max(8, round(region_height * 0.06))
+    line_records: list[dict[str, Any]] = []
+    cursor = y
+    palette = {"top": "#FFD400", "middle": "#E60012", "bottom": "#FFD400"}
+    for item in lines:
+        face = _fit_overlay_face(draw, item["text"], region_width, maximum, minimum)
+        stroke = max(2, round(getattr(face, "size", minimum) * 0.055))
+        left, top, right, bottom = draw.textbbox((0, 0), item["text"], font=face, stroke_width=stroke)
+        text_width, text_height = right - left, bottom - top
+        centre_x = x + region_width // 2
+        centre_y = cursor + text_height // 2
+        draw.text(
+            (centre_x, centre_y), item["text"], font=face, fill=palette[item["position"]],
+            stroke_width=stroke, stroke_fill="#000000", anchor="mm",
+        )
+        line_records.append({
+            "position": item["position"], "text": item["text"],
+            "bbox": [centre_x - text_width // 2, centre_y - text_height // 2, text_width, text_height],
+            "font_size_px": getattr(face, "size", minimum), "stroke_width_px": stroke,
+            "fill": palette[item["position"]],
+        })
+        cursor += text_height + gap
+    frame.alpha_composite(overlay)
+    used_bottom = max((record["bbox"][1] + record["bbox"][3] for record in line_records), default=y)
+    font_path = ""
+    if line_records:
+        _face, _family, font_path = _cover_font(int(line_records[0]["font_size_px"]))
+    return {
+        "enabled": True, "layer": "release_cover_text", "bbox": [x, y, region_width, max(0, used_bottom - y)],
+        "font_path": font_path, "lines": line_records,
+    }
+
+
+def _extract_video_frame(video: Path, destination: Path, frame_seconds: float) -> dict[str, Any]:
+    if not shutil.which("ffmpeg"):
+        raise ReleasePackageError("ffmpeg is required to extract a release-cover frame from the finished video.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp.png"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, frame_seconds):.3f}",
+                "-i", str(video), "-frames:v", "1", "-f", "image2", str(temporary),
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not temporary.is_file():
+            raise ReleasePackageError(f"Could not extract a frame from finished video {video}: {result.stderr.strip() or 'ffmpeg failed'}")
+        with Image.open(temporary) as extracted:
+            frame = extracted.convert("RGBA")
+            frame.save(destination, format="PNG")
+            dimensions = {"width": frame.width, "height": frame.height}
+        return dimensions
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def materialize_video_frame_covers(
+    root: Path,
+    production: dict[str, Any],
+    rendered: list[dict[str, Any]],
+    ratios: list[str],
+    frame_seconds: float = VIDEO_FRAME_COVER_SECONDS,
+) -> dict[str, dict[str, Any]]:
+    """Build canonical release covers from finished-video frames.
+
+    The first video frame is the complete background. Existing editorial
+    ``cover_text`` is painted on one transparent overlay layer. This keeps the
+    release cover visually identical to the selected Editorial Modern video
+    instead of maintaining a second, unrelated dark-cover renderer.
+    """
+    root = root.resolve()
+    editorial_path: Path | None = None
+    artifacts = production.get("artifacts", {})
+    editorial_ref = artifacts.get("editorial_assets") if isinstance(artifacts, dict) else None
+    if isinstance(editorial_ref, str):
+        candidate = (root / editorial_ref).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.is_file():
+            editorial_path = candidate
+    editorial: dict[str, Any] = {}
+    if editorial_path:
+        try:
+            payload = read_json(editorial_path)
+            if isinstance(payload, dict):
+                editorial = payload
+        except (OSError, ValueError):
+            editorial = {}
+    cover_art = editorial.get("cover_art") if isinstance(editorial.get("cover_art"), dict) else {}
+    lines = _overlay_lines(cover_art.get("text_lines"))
+    results: dict[str, dict[str, Any]] = {}
+    outputs: dict[str, Any] = {}
+    if editorial_path:
+        if not isinstance(editorial.get("cover_art"), dict):
+            editorial["cover_art"] = {}
+        if not isinstance(editorial["cover_art"].get("outputs"), dict):
+            editorial["cover_art"]["outputs"] = {}
+        outputs = editorial["cover_art"]["outputs"]
+    for ratio in list(dict.fromkeys(str(item) for item in ratios)):
+        video = _video_for_ratio(root, rendered, ratio)
+        destination = root / "release" / "covers" / f"cover-{ratio.replace(':', 'x')}.png"
+        dimensions = _extract_video_frame(video, destination, frame_seconds)
+        with Image.open(destination) as extracted:
+            frame = extracted.convert("RGBA")
+        overlay = _overlay_cover_text(frame, lines, ratio)
+        frame.convert("RGB").save(destination, format="PNG")
+        record = {
+            "path": str(destination.relative_to(root).as_posix()),
+            "sha256": sha256_file(destination),
+            "dimensions": dimensions,
+            "template": "video_frame_overlay",
+            "base_template": "Editorial Modern opening frame",
+            "source_kind": "finished_video_frame",
+            "source_video": str(video.relative_to(root).as_posix()),
+            "source_video_sha256": sha256_file(video),
+            "frame_time_seconds": round(float(frame_seconds), 3),
+            "overlay": overlay,
+        }
+        results[ratio] = record
+        if editorial_path:
+            existing = outputs.get(ratio) if isinstance(outputs, dict) else None
+            if not isinstance(existing, dict):
+                existing = {}
+            outputs[ratio] = {**existing, **record}
+
+    if editorial_path:
+        editorial.setdefault("cover_art", {})["background_source"] = {
+            "mode": "finished_video_frame", "frame_time_seconds": round(float(frame_seconds), 3),
+        }
+        _write_json(editorial_path, editorial)
+    production.setdefault("artifacts", {})
+    production.setdefault("artifact_hashes", {})
+    for ratio, record in results.items():
+        key = f"cover_{ratio.replace(':', 'x')}"
+        production["artifacts"][key] = record["path"]
+        production["artifact_hashes"][key] = record["sha256"]
+    if editorial_path:
+        relative = str(editorial_path.relative_to(root).as_posix())
+        production["artifacts"]["editorial_assets"] = relative
+        production["artifact_hashes"]["editorial_assets"] = sha256_file(editorial_path)
+    production_path = root / "production.json"
+    if production_path.is_file():
+        _write_json(production_path, production)
+    return results
 
 
 def _cover_sources(root: Path, production: dict[str, Any], ratios: list[str]) -> list[tuple[str, Path]]:
@@ -156,6 +395,7 @@ def build_release_package(
     rendered: list[dict[str, Any]],
     ratios: list[str],
     voice_profile: str,
+    cover_records: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build and verify a compact, independently copied release package."""
     root = root.resolve()
@@ -187,6 +427,11 @@ def build_release_package(
             record["path"] = f"release/video-publish-package/covers/{source.name}"
             record["source_path"] = str(source.relative_to(root).as_posix())
             record["aspect_ratio"] = ratio
+            provenance = (cover_records or {}).get(ratio)
+            if isinstance(provenance, dict):
+                for key in ("source_kind", "source_video", "source_video_sha256", "frame_time_seconds", "overlay"):
+                    if key in provenance:
+                        record[key] = provenance[key]
             package_files.append(record)
 
         for item in rendered:
@@ -308,7 +553,10 @@ def finalize_release_package(
         raise ReleasePackageError("The completed workflow has no rendered video outputs.")
     if not isinstance(ratios, list) or not ratios:
         raise ReleasePackageError("The completed workflow has no aspect-ratio selection.")
-    package = build_release_package(root, production, outputs, [str(ratio) for ratio in ratios], str(voice_profile))
+    selected_ratios = [str(ratio) for ratio in ratios]
+    cover_generation = materialize_video_frame_covers(root, production, outputs, selected_ratios)
+    package = build_release_package(root, production, outputs, selected_ratios, str(voice_profile), cover_generation)
+    package["cover_generation"] = cover_generation
     selected_variants = []
     request = production.get("workflow", {}).get("request", {})
     products = request.get("products") if isinstance(request, dict) else None
