@@ -20,13 +20,17 @@ from typing import Any
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_SCRIPT = SCRIPT_ROOT / "publication-static-slide-video" / "scripts" / "static_slide_storyboard.py"
+VIDEO_COVER_SCRIPT = SCRIPT_ROOT / "publication-video-cover" / "scripts"
 RELEASE_SCRIPT = Path(__file__).resolve().parent
 if str(STATIC_SCRIPT.parent) not in sys.path:
     sys.path.insert(0, str(STATIC_SCRIPT.parent))
+if str(VIDEO_COVER_SCRIPT) not in sys.path:
+    sys.path.insert(0, str(VIDEO_COVER_SCRIPT))
 if str(RELEASE_SCRIPT) not in sys.path:
     sys.path.insert(0, str(RELEASE_SCRIPT))
 
 import static_slide_storyboard as storyboard  # type: ignore  # noqa: E402
+import publication_video_cover as video_cover  # type: ignore  # noqa: E402
 from release_package import (  # type: ignore  # noqa: E402
     ReleasePackageError,
     finalize_release_package,
@@ -34,7 +38,7 @@ from release_package import (  # type: ignore  # noqa: E402
 
 
 WORKFLOW_NAME = "publication-podcast-studio-workflow"
-WORKFLOW_VERSION = "1.2.0"
+WORKFLOW_VERSION = "1.3.0"
 SUPPORTED_VARIANTS = {"en", "en-zh", "zh-CN"}
 SUPPORTED_ASPECT_RATIOS = {"16:9", "9:16"}
 SUPPORTED_SUBTITLE_MODES = {"default", "en-only"}
@@ -251,6 +255,48 @@ def freeze_vertical_request(
     })
 
 
+def materialize_covers(
+    root: Path,
+    production_path: Path,
+    production: dict[str, Any],
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the authoritative post-video cover stage and persist its state."""
+    outputs = report.get("outputs")
+    ratios = report.get("aspect_ratios")
+    if not isinstance(outputs, list) or not outputs:
+        raise WorkflowError("video-cover: no finished video outputs are available.")
+    if not isinstance(ratios, list) or not ratios:
+        raise WorkflowError("video-cover: no aspect-ratio selection is available.")
+    try:
+        result = video_cover.materialize_video_covers(
+            root, production, outputs, [str(ratio) for ratio in ratios],
+        )
+    except (OSError, ValueError, video_cover.VideoCoverError) as error:
+        report["state"] = "failed"
+        report["finished_at"] = utc_now()
+        report["cover_generation"] = {"state": "failed", "reason": str(error)}
+        production.setdefault("workflow", {}).update({
+            "state": "failed",
+            "stages": {**production.get("workflow", {}).get("stages", {}), "cover": "failed"},
+            "cover_generation": {"state": "failed", "reason": str(error)},
+            "updated_at": utc_now(),
+        })
+        write_json(production_path, production)
+        write_json(root / "workflow-report.json", report)
+        raise WorkflowError(f"video-cover: {error}") from error
+    report["cover_generation"] = result
+    report["stages"] = {**report.get("stages", {}), "cover": "complete"}
+    production.setdefault("workflow", {}).update({
+        "state": "complete",
+        "stages": {**production.get("workflow", {}).get("stages", {}), "cover": "complete"},
+        "cover_generation": result,
+        "updated_at": utc_now(),
+    })
+    write_json(production_path, production)
+    return result
+
+
 def run_workflow(
     package: Path,
     variant: str | None,
@@ -349,7 +395,7 @@ def run_workflow(
     production.setdefault("workflow", {}).update({
         "state": "complete",
         "media": "reused_local_artifacts",
-        "stages": {"article": "validated", "scripts": "validated", "media": "reused", "storyboard": "complete", "video": "complete"},
+        "stages": {"article": "validated", "scripts": "validated", "media": "reused", "storyboard": "complete", "video": "complete", "cover": "pending"},
         "updated_at": utc_now(),
     })
     write_json(production_path, production)
@@ -378,6 +424,7 @@ def run_workflow(
         "outputs": rendered,
         "limitations": [],
     }
+    materialize_covers(root, production_path, production, report)
     should_finalize = confirmed_matrix and confirmed
     if should_finalize:
         try:
@@ -422,7 +469,13 @@ def finalize_existing_workflow(package: Path, cleanup_policy: str = "safe") -> d
         raise WorkflowError("workflow-report.json is missing; run the video workflow before finalizing.")
     report = read_json(report_path)
     try:
+        materialize_covers(root, production_path, production, report)
+        # materialize_covers persists production.json; keep the in-memory copy
+        # aligned for cleanup and package provenance below.
+        production = read_json(production_path)
         release_package, cleanup = finalize_release_package(root, production, report, cleanup_policy)
+    except WorkflowError:
+        raise
     except (OSError, ValueError, ReleasePackageError) as error:
         raise WorkflowError(f"release-package: {error}") from error
     report["schema_version"] = "1.1.0"

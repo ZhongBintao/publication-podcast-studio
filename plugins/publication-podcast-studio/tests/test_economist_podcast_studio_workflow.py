@@ -187,6 +187,11 @@ class EconomistPodcastStudioWorkflowTests(unittest.TestCase):
             self.assertTrue(cover_generation["9:16"]["overlay"]["enabled"])
             with Image.open(root / "release" / "covers" / "cover-9x16.png") as cover:
                 self.assertNotEqual(cover.getpixel((0, 0)), (255, 212, 0))
+            workflow_report = json.loads((root / "workflow-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(workflow_report["cover_generation"]["outputs"]["9:16"]["overlay"]["palette"]["line_1"], "#FFE500")
+            editorial = json.loads((root / "editorial-assets.json").read_text(encoding="utf-8"))
+            self.assertEqual(editorial["cover_art"]["outputs"]["9:16"]["source_kind"], "finished_video_frame")
+            self.assertEqual(production["artifacts"]["cover_9x16"], "release/covers/cover-9x16.png")
 
     def test_confirmed_release_cleanup_removes_only_selected_media_cache(self):
         with tempfile.TemporaryDirectory() as temporary:

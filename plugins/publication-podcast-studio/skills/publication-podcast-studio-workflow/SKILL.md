@@ -17,9 +17,11 @@ Before production, run the extraction preflight and confirm one frozen request:
 - duration: target plus hard cap, or `coverage_unbounded`;
 - video timing: 8-second opening and 20-second asset dwell by default;
 - title, description and matching release covers. Release covers are generated
-  after rendering by extracting the first frame of the corresponding finished
-  video and compositing the approved editorial cover-text overlay; they do not
-  use a separate dark background renderer.
+  by the independent `publication-video-cover` stage after rendering: it
+  extracts the first frame of the corresponding finished video and composites
+  the approved editorial cover-text overlay; it never uses a separate dark
+  background renderer. The reference treatment is a large yellow first line,
+  two cyan lines and a heavy black outline on a transparent overlay.
 
 Do not ask for item-by-item approval in short-issue mode. Lead selection,
 episode order, complete paragraph coverage and layout safety are automated
@@ -68,8 +70,9 @@ release/video-publish-package/
 ```
 
 The package contains only publishing copy, selected covers and finished
-videos. Each cover's `source_video`, `frame_time_seconds` and overlay geometry
-are recorded in the workflow report. After its hashes and sizes are verified,
+videos. Each cover's `source_video`, `frame_time_seconds`, source hash, palette
+and overlay geometry are recorded in the workflow report. The package rejects
+pending or legacy independent-background covers. After its hashes and sizes are verified,
 the default `safe` cleanup
 removes only selected variants' owned Azure media-stage cache and abandoned
 release-package staging directories. Shared external temporary work and

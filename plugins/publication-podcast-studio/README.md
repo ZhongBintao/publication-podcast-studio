@@ -3,14 +3,14 @@
 Repository-local Codex plugin for turning an English-language magazine or
 newspaper PDF into a source-linked bilingual podcast-video package.
 
-Version 1.4 supports two source modes and the Editorial Modern static-slide
+Version 1.5 supports two source modes and the Editorial Modern static-slide
 template:
 
 - `article`: one user-selected article from any publication;
 - `short_issue`: every editorial item in a small issue, ordered lead first and
   then by source order.
 
-The six skills under `skills/` form the production pipeline. The canonical
+The seven skills under `skills/` form the production pipeline. The canonical
 entrypoint is `publication-podcast-studio-workflow`; the other skills remain
 independently callable stages.
 
@@ -22,7 +22,11 @@ New English and Chinese scripts use a source-anchored opening and closing arc
 with one wrapper-only repair attempt. Existing policy-5.2 production packages
 remain readable and are not rewritten.
 
-After a confirmed video matrix succeeds, the workflow creates the compact
+After video rendering, the independent `publication-video-cover` skill creates
+the canonical cover from the selected finished video's exact 0-second frame,
+then adds one transparent overlay with a yellow first line, cyan second and
+third lines, and a thick black outline. It does not scale, crop or recolour the
+frame. After a confirmed video matrix succeeds, the workflow creates the compact
 `release/video-publish-package/` folder containing the publish copy, selected
 release covers and finished videos. Each release cover is taken from the first
 frame of the corresponding finished video and then receives the editorial

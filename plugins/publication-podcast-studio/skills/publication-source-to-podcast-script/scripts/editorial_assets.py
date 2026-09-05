@@ -7,7 +7,6 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -16,8 +15,6 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
-
-from PIL import Image, ImageDraw, ImageFont
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_ROOT = SCRIPT_DIR.parents[2]
@@ -41,16 +38,6 @@ DATE_RE = re.compile(
 )
 SERIAL_RE = re.compile(r"\b(?:(?:ISSUE|NO\.?|NUMBER)\s*[:#]?\s*[A-Z0-9][A-Z0-9./-]*|VOL(?:UME)?\.?\s*[A-Z0-9][A-Z0-9./-]*)\b", re.IGNORECASE)
 MIN_OCR_CONFIDENCE = 55.0
-FALLBACK_FONT_PATHS = (
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-)
-MICROSOFT_YAHEI_FONT_PATHS = (
-    "/Library/Fonts/Microsoft YaHei Bold.ttf",
-    "/Library/Fonts/Microsoft YaHei.ttf",
-    "C:/Windows/Fonts/msyhbd.ttc",
-    "C:/Windows/Fonts/msyh.ttc",
-)
 
 
 class EditorialAssetsError(ValueError):
@@ -418,33 +405,8 @@ def extract_cover_issue_info(cover_path: Path) -> dict[str, Any]:
     return {"status": "complete", "extraction_method": "local_tesseract_sparse_text", "source_page": 1, "fields": fields}
 
 
-def cover_font() -> tuple[str, str]:
-    configured = os.environ.get("EDITORIAL_COVER_FONT_PATH")
-    candidates = tuple(path for path in (configured,) if path) + MICROSOFT_YAHEI_FONT_PATHS + FALLBACK_FONT_PATHS
-    for path in candidates:
-        if Path(path).is_file():
-            family = "Microsoft YaHei" if "yahei" in Path(path).name.casefold() or "msyh" in Path(path).name.casefold() else Path(path).stem
-            return path, family
-    raise EditorialAssetsError("No usable cover font was found.")
-
-
-def fitted_cover_font(draw: ImageDraw.ImageDraw, value: str, font_path: str, width: int, height: int) -> tuple[ImageFont.FreeTypeFont, int, int]:
-    maximum = min(width, height)
-    minimum = max(12, round(min(width, height) * 0.035))
-    best: tuple[ImageFont.FreeTypeFont, int, int] | None = None
-    for size in range(maximum, minimum - 1, -2):
-        stroke = max(2, round(size * 0.055))
-        face = ImageFont.truetype(font_path, size)
-        left, top, right, bottom = draw.textbbox((0, 0), value, font=face, stroke_width=stroke)
-        if right - left <= width and bottom - top <= height:
-            best = (face, size, stroke)
-            break
-    if best is None:
-        raise EditorialAssetsError("Cover text cannot fit inside its allocated region.")
-    return best
-
-
 def rect_overlap(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    """Return whether two x/y/width/height boxes intersect."""
     left_x, left_y, left_width, left_height = left
     right_x, right_y, right_width, right_height = right
     return not (
@@ -453,172 +415,6 @@ def rect_overlap(left: tuple[int, int, int, int], right: tuple[int, int, int, in
         or left_y + left_height <= right_y
         or right_y + right_height <= left_y
     )
-
-
-def fit_contained_image(canvas: Image.Image, source_path: Path, region: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    x, y, width, height = region
-    with Image.open(source_path) as source:
-        image = source.convert("RGB")
-        scale = min(width / image.width, height / image.height)
-        destination_width = max(1, round(image.width * scale))
-        destination_height = max(1, round(image.height * scale))
-        image = image.resize((destination_width, destination_height), Image.Resampling.LANCZOS)
-    origin = (x + (width - destination_width) // 2, y + (height - destination_height) // 2)
-    canvas.paste(image, origin)
-    return (origin[0], origin[1], destination_width, destination_height)
-
-
-def wrap_cover_text(draw: ImageDraw.ImageDraw, value: str, face: ImageFont.FreeTypeFont, width: int) -> list[str]:
-    if not value:
-        return []
-    tokens = value.split() if " " in value else list(value)
-    separator = " " if " " in value else ""
-    lines: list[str] = []
-    current = ""
-    for token in tokens:
-        candidate = token if not current else f"{current}{separator}{token}"
-        if current and draw.textbbox((0, 0), candidate, font=face)[2] > width:
-            lines.append(current)
-            current = token
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return lines
-
-
-def fitted_wrapped_text(
-    draw: ImageDraw.ImageDraw,
-    value: str,
-    font_path: str,
-    maximum: int,
-    minimum: int,
-    width: int,
-    height: int,
-    max_lines: int,
-) -> tuple[ImageFont.FreeTypeFont, int, list[str], int]:
-    for size in range(maximum, minimum - 1, -1):
-        face = ImageFont.truetype(font_path, size)
-        lines = wrap_cover_text(draw, value, face, width)
-        line_height = max(1, round(size * 1.18))
-        if 0 < len(lines) <= max_lines and len(lines) * line_height <= height:
-            return face, size, lines, line_height
-    raise EditorialAssetsError("Article metadata cannot fit inside the release-cover safe area.")
-
-
-def release_cover_regions(aspect_ratio: str, width: int, height: int) -> dict[str, tuple[int, int, int, int]]:
-    if aspect_ratio == "16:9":
-        return {
-            "front_page": (90, 90, 390, 560),
-            "art_text_top": (540, 90, 1290, 170),
-            "art_text_middle": (540, 300, 1290, 170),
-            "art_text_bottom": (540, 510, 1290, 170),
-            "article_metadata": (90, 735, 1740, 270),
-        }
-    if aspect_ratio == "9:16":
-        return {
-            "front_page": (220, 55, 640, 690),
-            "art_text_top": (70, 805, 940, 165),
-            "art_text_middle": (70, 1010, 940, 165),
-            "art_text_bottom": (70, 1215, 940, 165),
-            "article_metadata": (60, 1440, 960, 390),
-        }
-    raise EditorialAssetsError(f"Unsupported release cover aspect ratio: {aspect_ratio}")
-
-
-def draw_release_metadata(
-    draw: ImageDraw.ImageDraw,
-    article: dict[str, Any],
-    display: dict[str, Any],
-    region: tuple[int, int, int, int],
-    font_path: str,
-) -> list[dict[str, Any]]:
-    metadata = source_display_metadata(article)
-    x, y, width, height = region
-    items = [
-        ("kicker", str(metadata.get("kicker") or metadata.get("section") or "").upper(), 31, 16, 1, "#D71920"),
-        ("headline", str(metadata.get("headline") or ""), 54, 22, 3, "#FFFFFF"),
-        ("headline_zh", display["headline_zh"], 34, 18, 2, "#FFFFFF"),
-        ("subtitle", str(metadata.get("subtitle") or ""), 26, 15, 2, "#FFFFFF"),
-        ("subtitle_zh", display["subtitle_zh"], 20, 14, 2, "#FFFFFF"),
-        ("byline_dateline", " · ".join(value for value in (metadata.get("byline"), metadata.get("dateline")) if value), 18, 12, 1, "#FFFFFF"),
-    ]
-    for scale in range(100, 44, -4):
-        rendered = []
-        total_height = 0
-        for layer_id, value, maximum, minimum, max_lines, color in items:
-            if not value:
-                continue
-            face, size, lines, line_height = fitted_wrapped_text(
-                draw, value, font_path, max(minimum, round(maximum * scale / 100)), minimum, width, height, max_lines,
-            )
-            block_height = len(lines) * line_height
-            rendered.append((layer_id, face, size, lines, line_height, block_height, color))
-            total_height += block_height + max(8, round(size * 0.22))
-        if total_height <= height:
-            break
-    else:
-        raise EditorialAssetsError("Article metadata cannot fit inside the release-cover safe area.")
-    cursor = y + max(0, (height - total_height) // 2)
-    records = []
-    for layer_id, face, size, lines, line_height, block_height, color in rendered:
-        for line in lines:
-            draw.text((x, cursor), line, font=face, fill=color)
-            cursor += line_height
-        records.append({"id": layer_id, "bbox": [x, cursor - block_height, width, block_height], "font_size_px": size})
-        cursor += max(8, round(size * 0.22))
-    return records
-
-
-def render_cover(article: dict[str, Any], root: Path, payload: dict[str, Any], aspect_ratio: str, destination: Path) -> dict[str, Any]:
-    cover_ref = article.get("front_page", {}).get("file")
-    if not isinstance(cover_ref, str):
-        raise EditorialAssetsError("article.json needs front_page.file for publication cover rendering.")
-    cover_path = (root / cover_ref).resolve()
-    try:
-        cover_path.relative_to(root.resolve())
-    except ValueError as error:
-        raise EditorialAssetsError("Front page must remain inside the production package.") from error
-    if not cover_path.is_file():
-        raise EditorialAssetsError(f"Front page is missing: {cover_path}")
-    output_width, output_height = (1920, 1080) if aspect_ratio == "16:9" else (1080, 1920)
-    image = Image.new("RGB", (output_width, output_height), "#262626")
-    draw = ImageDraw.Draw(image)
-    font_path, font_family = cover_font()
-    regions = release_cover_regions(aspect_ratio, output_width, output_height)
-    cover_bbox = fit_contained_image(image, cover_path, regions["front_page"])
-    x, y, width, height = cover_bbox
-    draw.rectangle((x, y, x + width - 1, y + height - 1), outline="#FFFFFF", width=3)
-    metadata_records = draw_release_metadata(draw, article, payload["display"], regions["article_metadata"], font_path)
-    records = []
-    colors = {"top": "#FFD400", "middle": "#E60012", "bottom": "#FFD400"}
-    for line in payload["cover_text"]:
-        x, y, width, height = regions[f"art_text_{line['position']}"]
-        face, size, stroke = fitted_cover_font(draw, line["text"], font_path, width, height)
-        centre = (x + width // 2, y + height // 2)
-        text_box = draw.textbbox(centre, line["text"], font=face, stroke_width=stroke, anchor="mm")
-        actual = (text_box[0], text_box[1], text_box[2] - text_box[0], text_box[3] - text_box[1])
-        if rect_overlap(actual, cover_bbox) or any(rect_overlap(actual, tuple(record["bbox"])) for record in metadata_records):
-            raise EditorialAssetsError("Release-cover art text overlaps publication metadata or front page.")
-        draw.text(centre, line["text"], font=face, fill=colors[line["position"]], stroke_width=stroke, stroke_fill="#000000", anchor="mm")
-        records.append({"position": line["position"], "font_size_px": size, "stroke_width_px": stroke, "fill": colors[line["position"]], "bbox": list(actual), "safe_region": list(regions[f"art_text_{line['position']}"])})
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    image.save(destination, format="PNG")
-    return {
-        "path": str(destination.resolve().relative_to(root.resolve())),
-        "sha256": sha256_file(destination),
-        "dimensions": {"width": image.width, "height": image.height},
-        "template": f"release_cover_{'landscape' if aspect_ratio == '16:9' else 'portrait'}",
-        "source_kind": "provisional_source_cover",
-        "note": "Replaced by a finished-video frame cover during confirmed workflow finalisation.",
-        "base_template": "landscape_opening" if aspect_ratio == "16:9" else "portrait_opening",
-        "font_family": font_family,
-        "font_path": font_path,
-        "safe_regions": {name: list(box) for name, box in regions.items()},
-        "front_page_bbox": list(cover_bbox),
-        "metadata_layout": metadata_records,
-        "line_layout": records,
-    }
 
 
 def publish_markdown(assets: dict[str, Any]) -> str:
@@ -630,9 +426,11 @@ def publish_markdown(assets: dict[str, Any]) -> str:
     cover_lines = []
     for ratio in ("16:9", "9:16"):
         output = covers.get(ratio)
-        if output:
+        if isinstance(output, dict) and output.get("state") == "complete":
             label = "横屏" if ratio == "16:9" else "竖屏"
             cover_lines.append(f"- {label}：{output['path']}")
+    if not cover_lines:
+        cover_lines.append("- 成片渲染完成后由 publication-video-cover 从视频 0 秒首帧生成")
     return "\n".join([
         "# 发布素材", "", "## 标题", "", assets["publication"]["title_zh"], "", "## 简介", "", assets["publication"]["description_zh"], "", "## 首页刊号类信息", "",
         *issue_lines, "", "## 发布封面", "", *cover_lines, "",
@@ -653,14 +451,27 @@ def register_production(production_path: Path, assets_path: Path) -> None:
         production["artifacts"]["publish_copy"] = str(publish_copy_path.relative_to(root))
         production.setdefault("artifact_hashes", {})["publish_copy"] = sha256_file(publish_copy_path)
     assets = read_json(assets_path)
-    for ratio, output in assets.get("cover_art", {}).get("outputs", {}).items():
-        reference = output.get("path") if isinstance(output, dict) else None
+    cover_outputs = assets.get("cover_art", {}).get("outputs", {}) if isinstance(assets.get("cover_art"), dict) else {}
+    for key in list(production["artifacts"]):
+        if key.startswith("cover_"):
+            production["artifacts"].pop(key, None)
+            production.setdefault("artifact_hashes", {}).pop(key, None)
+    for ratio, output in cover_outputs.items() if isinstance(cover_outputs, dict) else []:
+        key = f"cover_{ratio.replace(':', 'x')}"
+        if not isinstance(output, dict) or output.get("state") != "complete" or output.get("source_kind") != "finished_video_frame":
+            production["artifacts"].pop(key, None)
+            production.setdefault("artifact_hashes", {}).pop(key, None)
+            continue
+        reference = output.get("path")
         if not isinstance(reference, str):
+            production["artifacts"].pop(key, None)
+            production.setdefault("artifact_hashes", {}).pop(key, None)
             continue
         cover_path = (root / reference).resolve()
         if not cover_path.is_file():
+            production["artifacts"].pop(key, None)
+            production.setdefault("artifact_hashes", {}).pop(key, None)
             continue
-        key = f"cover_{ratio.replace(':', 'x')}"
         production["artifacts"][key] = str(cover_path.relative_to(root))
         production.setdefault("artifact_hashes", {})[key] = sha256_file(cover_path)
     write_json(production_path, production)
@@ -677,9 +488,6 @@ def finalise(
     article, paragraphs = load_article(article_path)
     payload = validate_draft(article, paragraphs, read_json(draft_path), publication_variant)
     root = assets_path.parent.resolve()
-    cover_ref = article.get("front_page", {}).get("file")
-    if not isinstance(cover_ref, str):
-        raise EditorialAssetsError("article.json needs front_page.file.")
     if aspect_ratios is None and production_path:
         production = read_json(production_path)
         request = production.get("workflow", {}).get("request", {})
@@ -689,11 +497,20 @@ def finalise(
     selected_ratios = list(dict.fromkeys(aspect_ratios or ["16:9", "9:16"]))
     if not selected_ratios or any(ratio not in {"16:9", "9:16"} for ratio in selected_ratios):
         raise EditorialAssetsError("Editorial cover aspect ratios must be 16:9 and/or 9:16.")
-    issue_info = extract_cover_issue_info((root / cover_ref).resolve())
     cover_outputs = {
-        ratio: render_cover(article, root, payload, ratio, root / "release" / "covers" / f"cover-{ratio.replace(':', 'x')}.png")
+        ratio: {
+            "state": "pending_video_frame",
+            "path": str((root / "release" / "covers" / f"cover-{ratio.replace(':', 'x')}.png").relative_to(root).as_posix()),
+            "template": "video_frame_cover",
+            "source_kind": "pending_video_frame",
+            "frame_time_seconds": 0.0,
+        }
         for ratio in selected_ratios
     }
+    cover_ref = article.get("front_page", {}).get("file")
+    if not isinstance(cover_ref, str):
+        raise EditorialAssetsError("article.json needs front_page.file.")
+    issue_info = extract_cover_issue_info((root / cover_ref).resolve())
     assets = {
         "format": EDITORIAL_FORMAT,
         "schema_version": "2.0.0",
@@ -709,7 +526,24 @@ def finalise(
         "publication": payload["publication"],
         "cover_art": {
             "text_lines": payload["cover_text"],
-            "style": {"stroke_fill": "#000000", "top_bottom_fill": "#FFD400", "middle_fill": "#E60012", "font_preference": "Microsoft YaHei"},
+            "state": "pending_video_frame",
+            "background_source": {
+                "mode": "finished_video_frame",
+                "frame_time_seconds": 0.0,
+                "selection_priority": ["en-zh", "en", "zh-CN"],
+            },
+            "style_version": "reference-pop-v1",
+            "style": {
+                "font_family": "Noto Sans SC",
+                "font_weight": "bold",
+                "line_1_fill": "#FFE500",
+                "line_2_fill": "#12D9FF",
+                "line_3_fill": "#12D9FF",
+                "outline": "#000000",
+                "stroke_fill": "#000000",
+                "font_preference": "Noto Sans SC",
+                "no_background_panel": True,
+            },
             "outputs": cover_outputs,
         },
     }

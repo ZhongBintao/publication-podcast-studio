@@ -76,6 +76,13 @@ one. Each short-issue content unit receives its own `content_unit_display`.
 Guide question one belongs to the lead item; question two belongs to the
 highest-priority remaining item. All copy remains source-linked.
 
+`finalize-editorial` stores the three approved cover-text lines and creates
+only pending `cover_art.outputs` records. It does not paint a background or
+write a final cover image. After video rendering, the workflow invokes
+`publication-video-cover`, which extracts the selected finished video's `0`
+second frame and adds the transparent yellow/cyan text overlay. Only records
+with `source_kind: finished_video_frame` are eligible for the release package.
+
 ## Bilingual subtitles
 
 For `en-zh`, generate reviewed schema-3.0 subtitle units from the frozen

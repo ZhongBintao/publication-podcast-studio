@@ -51,7 +51,7 @@ class EditorialAssetsTests(unittest.TestCase):
         draft_path.write_text(json.dumps(draft), encoding="utf-8")
         return article_path, draft_path, production_path
 
-    def test_finalise_writes_one_authoritative_package_and_both_covers(self):
+    def test_finalise_writes_text_only_pending_cover_records(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             article, draft, production = self.make_package(root)
@@ -62,20 +62,25 @@ class EditorialAssetsTests(unittest.TestCase):
             self.assertEqual(result["translation_policy"], "meaning_first_chinese_transcreation")
             self.assertTrue((root / "publish-copy.md").is_file())
             self.assertIn(result["publication"]["title_zh"], (root / "publish-copy.md").read_text(encoding="utf-8"))
-            for ratio, dimensions in (("16:9", (1920, 1080)), ("9:16", (1080, 1920))):
+            for ratio in ("16:9", "9:16"):
                 output = result["cover_art"]["outputs"][ratio]
                 path = root / output["path"]
-                self.assertTrue(path.is_file())
-                self.assertEqual((output["dimensions"]["width"], output["dimensions"]["height"]), dimensions)
-                with Image.open(path) as rendered:
-                    self.assertEqual(rendered.getpixel((0, 0)), (38, 38, 38))
-                    cover_x, cover_y, _, _ = output["front_page_bbox"]
-                    self.assertEqual(rendered.getpixel((cover_x, cover_y)), (255, 255, 255))
-                self.assertEqual([line["fill"] for line in output["line_layout"]], ["#FFD400", "#E60012", "#FFD400"])
-                self.assertTrue(all(line["stroke_width_px"] > 0 for line in output["line_layout"]))
+                self.assertFalse(path.exists())
+                self.assertEqual(output["state"], "pending_video_frame")
+                self.assertEqual(output["source_kind"], "pending_video_frame")
+                self.assertEqual(output["frame_time_seconds"], 0.0)
+            self.assertEqual(result["cover_art"]["state"], "pending_video_frame")
+            self.assertEqual(result["cover_art"]["style"]["line_1_fill"], "#FFE500")
+            self.assertEqual(result["cover_art"]["style"]["line_2_fill"], "#12D9FF")
+            self.assertEqual(result["cover_art"]["style"]["line_3_fill"], "#12D9FF")
+            self.assertTrue(result["cover_art"]["style"]["no_background_panel"])
+            self.assertIn("publication-video-cover", (root / "publish-copy.md").read_text(encoding="utf-8"))
+            self.assertNotIn("#262626", json.dumps(result, ensure_ascii=False))
             persisted = json.loads(production.read_text(encoding="utf-8"))
             self.assertEqual(persisted["artifacts"]["editorial_assets"], "editorial-assets.json")
             self.assertIn("editorial_assets", persisted["artifact_hashes"])
+            self.assertNotIn("cover_16x9", persisted["artifacts"])
+            self.assertNotIn("cover_9x16", persisted["artifacts"])
 
     def test_validator_requires_fixed_title_and_exact_three_ordered_lines(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -136,7 +141,7 @@ class EditorialAssetsTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.EditorialAssetsError, "confirmed publication"):
                 MODULE.validate_draft(article, paragraphs, invalid, "zh-CN")
 
-    def test_release_cover_uses_non_overlapping_safe_regions_for_long_titles(self):
+    def test_long_editorial_copy_keeps_cover_text_pending_for_video_stage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             article_path, draft_path, production = self.make_package(root)
@@ -149,11 +154,10 @@ class EditorialAssetsTests(unittest.TestCase):
             draft_path.write_text(json.dumps(draft), encoding="utf-8")
             result = MODULE.finalise(article_path, draft_path, root / "editorial-assets.json", production)
             for output in result["cover_art"]["outputs"].values():
-                metadata = [tuple(item["bbox"]) for item in output["metadata_layout"]]
-                art = [tuple(item["bbox"]) for item in output["line_layout"]]
-                self.assertTrue(all(not MODULE.rect_overlap(left, right) for left in art for right in metadata))
-                self.assertTrue(all(not MODULE.rect_overlap(tuple(item["bbox"]), tuple(output["front_page_bbox"])) for item in output["line_layout"]))
-                self.assertIn("safe_regions", output)
+                self.assertEqual(output["state"], "pending_video_frame")
+                self.assertEqual(output["source_kind"], "pending_video_frame")
+                self.assertNotIn("metadata_layout", output)
+                self.assertNotIn("front_page_bbox", output)
 
     def test_finalise_can_render_only_confirmed_aspect_ratio(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,10 +167,10 @@ class EditorialAssetsTests(unittest.TestCase):
                 article_path, draft_path, root / "editorial-assets.json", production, aspect_ratios=["9:16"]
             )
             self.assertEqual(set(result["cover_art"]["outputs"]), {"9:16"})
-            self.assertTrue((root / "release" / "covers" / "cover-9x16.png").is_file())
+            self.assertFalse((root / "release" / "covers" / "cover-9x16.png").exists())
             self.assertFalse((root / "release" / "covers" / "cover-16x9.png").exists())
             publish_copy = (root / "publish-copy.md").read_text(encoding="utf-8")
-            self.assertIn("竖屏：release/covers/cover-9x16.png", publish_copy)
+            self.assertIn("publication-video-cover", publish_copy)
             self.assertNotIn("横屏：", publish_copy)
 
     def test_validator_rejects_shallow_questions_and_duplicate_cover_copy(self):

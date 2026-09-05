@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication Video Cover"
+  short_description: "Create video-first covers with styled text overlay"
+  default_prompt: "Use $publication-video-cover to extract the finished publication video’s 0-second frame and add the approved yellow/cyan outlined cover text."

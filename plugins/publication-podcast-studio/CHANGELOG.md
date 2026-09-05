@@ -3,6 +3,19 @@
 All notable changes to this plugin are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 1.5.0 - 2026-09-05
+
+- Added the independent `publication-video-cover` skill. It extracts the exact
+  0-second frame from the selected finished video and adds the approved three-line
+  transparent overlay: yellow first line, cyan second and third lines, with a
+  heavy black outline.
+- Changed `finalize-editorial` to keep only pending cover text records; it no
+  longer writes the legacy dark background cover.
+- Made the workflow run video-cover generation immediately after rendering and
+  made release packaging reject pending or legacy cover sources.
+- Recorded source video hashes, frame time, style and measured overlay boxes in
+  editorial assets, production state and workflow reports.
+
 ## 1.4.1 - 2026-09-05
 
 - Changed confirmed release-cover generation to extract the opening frame from
